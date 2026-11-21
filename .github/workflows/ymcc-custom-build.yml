@@ -91,7 +91,7 @@ jobs:
           & tools/publish.ps1 -WorkspaceRoot $env:YEMAN_WORKSPACE_ROOT -FastRelease
           if ($LASTEXITCODE -ne 0) { throw 'Build/package failed.' }
 
-      - name: Verify artifact
+      - name: Verify and stage artifact into workspace
         shell: pwsh
         run: |
           $zip = Join-Path $env:YEMAN_WORKSPACE_ROOT 'Release\Packages\YeManCC.zip'
@@ -101,11 +101,16 @@ jobs:
           "ZIP: $zip"
           "Size: $size bytes"
           "SHA256: $hash"
+          # upload-artifact forbids '..' in paths; stage a copy inside github.workspace.
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'artifact'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath $zip -Destination (Join-Path $stage 'YeManCC.zip') -Force
+          "STAGED: $(Join-Path $stage 'YeManCC.zip')"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: YeManCC-AIRPLUS-custom
-          path: ${{ env.YEMAN_WORKSPACE_ROOT }}/Release/Packages/YeManCC.zip
+          path: artifact/YeManCC.zip
           if-no-files-found: error
           retention-days: 30
