@@ -1,0 +1,324 @@
+diff --git a/src/App.vue b/src/App.vue
+index 4ae7263..b7e62b2 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -1143,6 +1143,9 @@ function onUiSettingsLoaded(): void {
+   backgroundBlur.value = getBackgroundBlur();
+   backgroundVideoAutoPause.value = getUiSetting('videoBatteryPause');
+   updateLowBatteryStatic(topMonitorData.value);
++  // 字体/界面缩放偏好变更或加载后立即重算（无需新增事件监听）。
++  updateScale();
++  settleScale();
+ }
+ // ── UI 缩放层：设计基准 580×780，整体在窗口中居中显示 ──
+ // 用户偏好 2026-08-04：在原本「按窗口高度贴齐」基础上再放大 30%，居中后左右两侧留空更协调。
+@@ -1216,7 +1219,10 @@ function updateScale() {
+   // The shared shell scale is route-independent. A wider monitor workbench
+   // must adapt its own width, never shrink the sidebar, toolbar or other UI.
+   const widthCapped = w / YMCC_SHELL_BASE_WIDTH;
+-  setUiScale(Math.min(boosted, widthCapped));
++  // 用户字体/界面缩放偏好：小屏（如 6 寸 AYANEO AIR PLUS）可放大到 110%~120%。
++  // 乘在自动缩放之后，让档位作为最终视觉系数生效；zoom 同时作用于布局与命中测试。
++  const userFactor = Number(getUiSetting('uiScalePercent')) / 100 || 1;
++  setUiScale(Math.min(boosted, widthCapped) * userFactor);
+   return changed;
+ }
+ // 呼出/尺寸变化后视口读数可能分多帧才稳定（WebView2 隐藏→恢复、DWM 合成延迟）。
+diff --git a/src/bridge/controllerOemPresentation.ts b/src/bridge/controllerOemPresentation.ts
+index f0bcbbb..bdf6c2d 100644
+--- a/src/bridge/controllerOemPresentation.ts
++++ b/src/bridge/controllerOemPresentation.ts
+@@ -3,18 +3,51 @@ import { formatControllerShortcutInput, type ControllerShortcutInput, type OemKe
+ /** Steam Deck output names/slots; physical key IDs remain the recording contract. */
+ const STEAM_DECK_REAR_NAMES = ['L4', 'R4', 'L5', 'R5'] as const;
+ 
++/**
++ * YMCC-AIRPLUS-FIX: friendly display names for the four AYANEO CEc/CEii "Custom Keys".
++ * The physical keyId is the persistence/recording contract and is NEVER changed; only the
++ * human-facing label is localized. Proven by the model fixture mapping: ckbig=AYANEO Button,
++ * cksmall=Custom Key Small, cktl=LC (Top Left), cktr=RC (Top Right) on AYANEO CEii models.
++ * Scoped by deviceClass so Steam Deck / other families keep their original names.
++ */
++const AYANEO_CUSTOM_KEY_LABELS: Readonly<Record<string, string>> = {
++  ckbig: 'AYA 键',        // OEM1 — AYANEO Button — 呼出主窗口／快设
++  cksmall: '=/菜单键',     // OEM2 — Custom Key Small — 固件默认 Win+D（快捷工具/返回桌面）
++  cktl: 'LC 左自定义键',   // OEM3 — Top Left — 固件默认 Ctrl+Win+F15
++  cktr: 'RC 右自定义键',   // OEM4 — Top Right — 固件默认 Ctrl+Win+F16
++};
++const isAyaneoCecDisplay = (deviceClass: string | undefined): boolean =>
++  !!deviceClass && deviceClass.startsWith('HandheldCompanion.Devices.AYANEO') &&
++  // KUN adds its own T/Guide keys and NEXT2 has a different layout; keep their native names.
++  !deviceClass.includes('KUN') && !deviceClass.includes('NEXT2') && !deviceClass.includes('FlipDS');
++
++function applyAyaneoCustomKeyLabels(catalog: OemKeysSnapshot): OemKeysSnapshot {
++  if (!catalog.supported || !isAyaneoCecDisplay(catalog.deviceClass)) return catalog;
++  let changed = false;
++  const keys = catalog.keys.map(key => {
++    const alias = AYANEO_CUSTOM_KEY_LABELS[key.keyId];
++    if (!alias || key.label === alias) return key;
++    changed = true;
++    return { ...key, label: alias };
++  });
++  return changed ? { ...catalog, keys } : catalog;
++}
++
+ export function controllerOemDisplayCatalog(persona: string | undefined, catalog: OemKeysSnapshot): OemKeysSnapshot {
+-  if (persona !== 'steamdeck' || !catalog.supported) return catalog;
++  // Localize AYANEO custom-key names regardless of the virtual-pad persona (persona is about
++  // the output protocol, not the physical device), then apply the Deck slot remap if needed.
++  const localized = applyAyaneoCustomKeyLabels(catalog);
++  if (persona !== 'steamdeck' || !localized.supported) return localized;
+   return {
+-    ...catalog,
+-    keys: catalog.keys.map(key => {
++    ...localized,
++    keys: localized.keys.map(key => {
+       // Some models reuse m1 for a front auxiliary key. Only rear keys participate.
+       if (key.backIndex == null || !Number.isInteger(key.backIndex) || key.backIndex < 1 || key.backIndex > 4) return key;
+       // The model catalog owns front-view left/right; M1/M2 numbers do not.
+       // Lift a numbered rear key into the lower Deck row on the SAME side.
+       // MSI G3E: M1 is right -> R5, M2 is left -> L5. Already lifted slots stay stable.
+       const numberedRear = (key.keyId === 'm1' || key.keyId === 'm2') &&
+-        catalog.deviceClass !== 'HandheldCompanion.Devices.AYANEONEXT2';
++        localized.deviceClass !== 'HandheldCompanion.Devices.AYANEONEXT2';
+       const backIndex = numberedRear && key.backIndex <= 2 ? key.backIndex + 2 : key.backIndex;
+       return { ...key, backIndex, label: STEAM_DECK_REAR_NAMES[backIndex - 1] };
+     }),
+diff --git a/src/bridge/uiSettings.ts b/src/bridge/uiSettings.ts
+index 0766ed7..d8c5546 100644
+--- a/src/bridge/uiSettings.ts
++++ b/src/bridge/uiSettings.ts
+@@ -5,6 +5,8 @@ import { getSettingsGeneration, assertSettingsGeneration, readSettingsSection, s
+ 
+ export interface UiSettings {
+   theme: 'blue-black' | 'red-black' | 'cyberpunk';
++  // 面板 UI 字体/整体缩放百分比（小屏掌机便于查看）。档位：80/90/100/110/120。
++  uiScalePercent: number;
+   dynamicBackgroundEnabled: boolean;
+   steamDynamicWallpaperEnabled: boolean;
+   steamWallpaperPauseOnBattery: boolean;
+@@ -29,6 +31,7 @@ export interface UiSettings {
+ 
+ const DEFAULTS: UiSettings = {
+   theme: 'blue-black',
++  uiScalePercent: 100,
+   dynamicBackgroundEnabled: false,
+   // Default ON; a saved OFF remains authoritative across restart and wake.
+   steamDynamicWallpaperEnabled: true,
+@@ -60,11 +63,13 @@ let writeQueue: Promise<void> = Promise.resolve();
+ 
+ function normalize(input: Partial<UiSettings>): UiSettings {
+   const theme = input.theme === 'red-black' || input.theme === 'cyberpunk' ? input.theme : 'blue-black';
++  const scalePercent = Number(input.uiScalePercent);
+   const opacity = Number(input.backgroundOpacity);
+   const blur = Number(input.backgroundBlur);
+   const position = normalizeBackgroundPosition({ x: input.backgroundPositionX, y: input.backgroundPositionY });
+   return {
+     theme,
++    uiScalePercent: [80, 90, 100, 110, 120].includes(scalePercent) ? scalePercent : 100,
+     dynamicBackgroundEnabled: input.dynamicBackgroundEnabled === true,
+     steamDynamicWallpaperEnabled: input.steamDynamicWallpaperEnabled !== false,
+     steamWallpaperPauseOnBattery: input.steamWallpaperPauseOnBattery === true,
+diff --git a/src/components/AyaneoDedicatedKeyMonitor.vue b/src/components/AyaneoDedicatedKeyMonitor.vue
+new file mode 100644
+index 0000000..4a13ac0
+--- /dev/null
++++ b/src/components/AyaneoDedicatedKeyMonitor.vue
+@@ -0,0 +1,91 @@
++<script setup lang="ts">
++// YMCC-AIRPLUS-FIX: read-only live monitor for the four AYANEO dedicated keys
++// (AYA / = / LC / RC). It NEVER records, dispatches or rewrites any mapping —
++// it only visualises native receipts so a small-screen user can confirm that a
++// physical press reached YeManCC and see which standard key chord the firmware
++// emits. The real key identity stays the native keyId; labels/chords are display
++// only. Configuration is done in the existing shortcut editor (open via the
++// "配置" button). Safe-zone component: src/ only, no native/frozen changes.
++import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
++import { on as onIpc } from '@/bridge/ipc';
++import {
++  formatControllerShortcutInput,
++  type OemKeysSnapshot,
++  type OemSpecialKey,
++} from '@/bridge/controllerShortcutRules';
++import { controllerOemDisplayCatalog } from '@/bridge/controllerOemPresentation';
++
++const props = defineProps<{
++  oemKeys: OemKeysSnapshot;
++  persona?: string;
++}>();
++const emit = defineEmits<{ configure: [] }>();
++
++const AYA_KEY_IDS = ['ckbig', 'cksmall', 'cktl', 'cktr'] as const;
++const pressed = ref<string[]>([]);
++let stopState: (() => void) | null = null;
++
++const display = computed(() => controllerOemDisplayCatalog(props.persona, props.oemKeys));
++const keys = computed<OemSpecialKey[]>(() => {
++  if (!display.value.supported) return [];
++  return AYA_KEY_IDS
++    .map(id => display.value.keys.find(key => key.keyId === id))
++    .filter((key): key is OemSpecialKey => !!key);
++});
++
++/** Standard-key chord this firmware emits for the key (read-only profile expression). */
++function chordOf(key: OemSpecialKey): string {
++  const rule = key.keyboardContributions?.find(r => r.earlierGroupRules.length === 0) || key.keyboardContributions?.[0];
++  if (!rule) return '';
++  const parts = rule.keyGroups.map(group => group.map(code => formatControllerShortcutInput({ source: 'keyboard', code })).join('+'));
++  return [...parts, ...rule.mouseCodes.map(code => formatControllerShortcutInput({ source: 'mouse', code }))].join(' + ');
++}
++function isDown(id: string): boolean { return pressed.value.includes(id); }
++
++function onState(payload: unknown): void {
++  const state = payload as { oemPressedKeys?: unknown } | null;
++  pressed.value = Array.isArray(state?.oemPressedKeys)
++    ? state.oemPressedKeys.filter((k): k is string => typeof k === 'string')
++    : [];
++}
++
++onMounted(() => { stopState = onIpc('gamepad.state', onState); });
++onBeforeUnmount(() => { stopState?.(); stopState = null; });
++</script>
++
++<template>
++  <div v-if="keys.length" class="aya-dedicated-monitor" aria-label="AYANEO 专用键实时状态">
++    <div class="aya-monitor-head">
++      <span class="aya-monitor-title">专用键实时状态</span>
++      <button type="button" class="aya-monitor-config" :title="`在快捷键编辑器中配置 ${keys.length} 个专用键`" @click="emit('configure')">配置</button>
++    </div>
++    <div class="aya-monitor-grid">
++      <div v-for="key in keys" :key="key.keyId" class="aya-key-cell" :class="{ down: isDown(key.keyId), unavailable: key.captureImplemented === false }" :data-oem-key="key.keyId">
++        <span class="aya-key-led" aria-hidden="true"></span>
++        <span class="aya-key-label">{{ key.label }}</span>
++        <span class="aya-key-chord">{{ chordOf(key) || '固件未上报标准键码' }}</span>
++        <span class="aya-key-state">{{ isDown(key.keyId) ? '已按下' : '未按下' }}</span>
++      </div>
++    </div>
++    <p class="aya-monitor-hint">按下任一键验证是否收到反馈；键码为固件/AYASpace 映射后的标准组合键，非 EC 原始码。自定义动作请在「配置」中设置。</p>
++  </div>
++</template>
++
++<style scoped>
++.aya-dedicated-monitor{margin-top:10px;padding:10px;border:1px solid rgba(139,159,186,.16);border-radius:8px;background:var(--bg-input,rgba(139,159,186,.04))}
++.aya-monitor-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
++.aya-monitor-title{font-size:11px;font-weight:700;color:var(--text-dim)}
++.aya-monitor-config{padding:3px 9px;border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);border-radius:6px;background:color-mix(in srgb,var(--accent) 10%,var(--bg-input));color:var(--accent);font:inherit;font-size:11px;font-weight:700;cursor:pointer}
++.aya-monitor-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
++.aya-key-cell{display:grid;grid-template-rows:auto auto auto auto;justify-items:center;gap:2px;min-width:0;padding:7px 4px;border:1px solid rgba(139,159,186,.16);border-radius:7px;text-align:center;transition:border-color .1s,background .1s}
++.aya-key-cell.down{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,var(--bg-input))}
++.aya-key-cell.unavailable{opacity:.5}
++.aya-key-led{width:6px;height:6px;border-radius:50%;background:#667282}
++.aya-key-cell.down .aya-key-led{background:var(--accent);box-shadow:0 0 6px var(--accent)}
++.aya-key-label{min-width:0;max-width:100%;font-size:11px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.aya-key-chord{min-width:0;max-width:100%;font-size:10px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.aya-key-state{font-size:10px;color:var(--text-dim)}
++.aya-key-cell.down .aya-key-state{color:var(--accent)}
++.aya-monitor-hint{margin:8px 0 0;font-size:10px;line-height:1.5;color:var(--text-dim)}
++@media(max-width:520px){.aya-monitor-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
++</style>
+diff --git a/src/views/ButtonMappingView.vue b/src/views/ButtonMappingView.vue
+index bd1d05a..70e5c4a 100644
+--- a/src/views/ButtonMappingView.vue
++++ b/src/views/ButtonMappingView.vue
+@@ -5,6 +5,7 @@
+ // 手柄输入、虚拟输出、触摸反馈与游戏震动分别核实；具体执行见 native/main.cpp、InputHost/Program.cs，机型能力先查总库。
+ import { CONTROLLER_PERSONA_OPTIONS, isControllerPersona, migrateControllerPersona, type ControllerPersona } from '@/bridge/controllerPersona';
+ import ControllerChannelStatus from '@/components/ControllerChannelStatus.vue';
++import AyaneoDedicatedKeyMonitor from '@/components/AyaneoDedicatedKeyMonitor.vue';
+ import Toggle from '@/components/Toggle.vue';
+ import GameProfileModeBanner from '@/components/GameProfileModeBanner.vue';
+ import GameProfileRemoveDialog from '@/components/GameProfileRemoveDialog.vue';
+@@ -255,6 +256,14 @@ const gyroEnabled = ref(false);
+ const persona = ref<ControllerPersona>('disabled');
+ // Read-only runtime feedback must never be copied into the saved page refs.
+ const displayPersona = computed(() => shortcutRuntime.value?.persona ?? persona.value);
++// YMCC-AIRPLUS-FIX: show the read-only dedicated-key monitor only when the current
++// machine's OEM catalog actually has one of the four AYANEO CEc/CEii keys.
++const showAyaneoKeyMonitor = computed(() => {
++  const u = oemUsage.value;
++  if (!u?.supported) return false;
++  const ids = new Set(u.keys.map(k => k.keyId));
++  return ['ckbig', 'cksmall', 'cktl', 'cktr'].some(id => ids.has(id));
++});
+ const controllerTitle = computed(() => {
+   if (!snapshot.value && !shortcutRuntime.value) return '控制器';
+   if (displayPersona.value === 'disabled') return '本机控制器';
+@@ -584,6 +593,7 @@ function closeShortcutEditor(): void {
+             @click="onPersona(o.value)"
+           >{{ o.label }}</button>
+         </div>
++<AyaneoDedicatedKeyMonitor v-if="showAyaneoKeyMonitor && controllerPage==='controller'" :oem-keys="oemUsage!" :persona="displayPersona" @configure="openShortcutEditor" />
+ <p v-if="startProtectionLocked || targetProtectionNotice" class="field-hint" role="status" aria-live="polite">{{ targetProtectionNotice || '手柄切换处理中，请稍候。' }}</p>
+ <div class="controller-preview-row"><div ref="controllerPreviewHost" class="controller-preview-host" aria-label="现有手柄实时预览"/><ControllerChannelStatus :status="virtualOutputStatus" :gyro-supported="personaCapability.gyro" :gyro-enabled="shortcutRuntime?.gyroEnabled ?? gyroEnabled" :back-buttons="personaCapability.backButtons" :physical-gyro-supported="physicalGyroSupported" :physical-back-buttons="physicalBackButtons" :physical-back-buttons-captured="physicalBackButtonsCaptured" :usage="oemUsage" :virtual-enabled="displayTargetEnabled" :persona="displayPersona" :observed-keys="observedOemKeys" @inspect-keys="readPhysicalChannelCapabilities"/></div>
+       </div>
+diff --git a/src/views/SettingsView.vue b/src/views/SettingsView.vue
+index ec5f173..a1590c0 100644
+--- a/src/views/SettingsView.vue
++++ b/src/views/SettingsView.vue
+@@ -110,6 +110,7 @@ async function onUpdatePredownloadChange(enabled:boolean){try{await setUpdatePre
+ const backgroundFileLabel=ref('未选择背景文件'),backgroundPreviewUrl=ref('');
+ 
+ const theme = ref<ThemeName>(getTheme());
++const uiScalePercent = ref<number>(getUiSetting('uiScalePercent'));
+ const bgEnabled = ref(false);
+ const bgBusy = ref(false);
+ const bgKind = ref<'image' | 'video'>('image');
+@@ -286,6 +287,18 @@ function onThemeChange(value: string | number): void {
+   theme.value = next;
+   setTheme(next);
+ }
++async function onUiScalePercentChange(value: string | number): Promise<void> {
++  const next = Number(value);
++  if (![80, 90, 100, 110, 120].includes(next)) return;
++  errMsg.value = '';
++  try {
++    await setUiSettings({ uiScalePercent: next });
++    uiScalePercent.value = getUiSetting('uiScalePercent');
++  } catch (error) {
++    uiScalePercent.value = getUiSetting('uiScalePercent');
++    errMsg.value = '字体大小保存失败：' + (error instanceof Error ? error.message : String(error));
++  }
++}
+ async function onWindowPlacementChange(value: string | number): Promise<void> {
+   if (value !== 'left' && value !== 'right') return;
+   errMsg.value = '';
+@@ -862,6 +875,7 @@ async function openGithub() {
+ function syncAppearanceSettings(): void {
+   floatingSummonEnabled.value = getUiSetting('floatingSummonEnabled');
+   fxSoundAutoRepair.value = getUiSetting('fxSoundAutoRepair');
++  uiScalePercent.value = getUiSetting('uiScalePercent');
+   theme.value=getTheme();windowPlacement.value=getUiSetting('windowPlacement');
+   bgOpacity.value=Math.round(getBackgroundOpacity()*100);bgBlur.value=getBackgroundBlur();
+   if (!bgPositionEditing) bgPosition.value=getBackgroundPosition();
+@@ -877,6 +891,7 @@ onMounted(async () => {
+   await loadUiSettings();
+   floatingSummonEnabled.value = getUiSetting('floatingSummonEnabled');
+   fxSoundAutoRepair.value = getUiSetting('fxSoundAutoRepair');
++  uiScalePercent.value = getUiSetting('uiScalePercent');
+   videoBatteryPause.value = getUiSetting('videoBatteryPause');
+   windowPlacement.value = getUiSetting('windowPlacement');
+   bgOpacity.value = Math.round(getBackgroundOpacity() * 100);
+@@ -925,6 +940,23 @@ onBeforeUnmount(() => {
+         @update:model-value="onThemeChange"
+       />
+     </section></div>
++ <div class="setting-color"><section class="card interface-scale-settings">
++      <h3 class="card-title"><InlineIcon name="star" /> 字体大小</h3>
++      <SegButton
++        :model-value="uiScalePercent"
++        :options="[
++          { value: 80, label: '80%' },
++          { value: 90, label: '90%' },
++          { value: 100, label: '100%' },
++          { value: 110, label: '110%' },
++          { value: 120, label: '120%' },
++        ]"
++        color="accent"
++        full
++        @update:model-value="onUiScalePercentChange"
++      />
++      <p class="muted" style="margin:8px 0 0;font-size:12px">6 寸小屏建议 110%–120%；整个面板等比放大，字体更清晰。</p>
++    </section></div>
+  <div class="setting-wallpaper"><section class="card background-settings-card" aria-label="动态壁纸">
+  <h3 class="card-title"><InlineIcon name="monitor" />动态壁纸</h3>
+  <div class="wallpaper-editor-layout">
