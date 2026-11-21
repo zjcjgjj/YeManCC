@@ -5,6 +5,7 @@
 // 手柄输入、虚拟输出、触摸反馈与游戏震动分别核实；具体执行见 native/main.cpp、InputHost/Program.cs，机型能力先查总库。
 import { CONTROLLER_PERSONA_OPTIONS, isControllerPersona, migrateControllerPersona, type ControllerPersona } from '@/bridge/controllerPersona';
 import ControllerChannelStatus from '@/components/ControllerChannelStatus.vue';
+import AyaneoDedicatedKeyMonitor from '@/components/AyaneoDedicatedKeyMonitor.vue';
 import Toggle from '@/components/Toggle.vue';
 import GameProfileModeBanner from '@/components/GameProfileModeBanner.vue';
 import GameProfileRemoveDialog from '@/components/GameProfileRemoveDialog.vue';
@@ -255,6 +256,14 @@ const gyroEnabled = ref(false);
 const persona = ref<ControllerPersona>('disabled');
 // Read-only runtime feedback must never be copied into the saved page refs.
 const displayPersona = computed(() => shortcutRuntime.value?.persona ?? persona.value);
+// YMCC-AIRPLUS-FIX: show the read-only dedicated-key monitor only when the current
+// machine's OEM catalog actually has one of the four AYANEO CEc/CEii keys.
+const showAyaneoKeyMonitor = computed(() => {
+  const u = oemUsage.value;
+  if (!u?.supported) return false;
+  const ids = new Set(u.keys.map(k => k.keyId));
+  return ['ckbig', 'cksmall', 'cktl', 'cktr'].some(id => ids.has(id));
+});
 const controllerTitle = computed(() => {
   if (!snapshot.value && !shortcutRuntime.value) return '控制器';
   if (displayPersona.value === 'disabled') return '本机控制器';
@@ -584,6 +593,7 @@ function closeShortcutEditor(): void {
             @click="onPersona(o.value)"
           >{{ o.label }}</button>
         </div>
+<AyaneoDedicatedKeyMonitor v-if="showAyaneoKeyMonitor && controllerPage==='controller'" :oem-keys="oemUsage!" :persona="displayPersona" @configure="openShortcutEditor" />
 <p v-if="startProtectionLocked || targetProtectionNotice" class="field-hint" role="status" aria-live="polite">{{ targetProtectionNotice || '手柄切换处理中，请稍候。' }}</p>
 <div class="controller-preview-row"><div ref="controllerPreviewHost" class="controller-preview-host" aria-label="现有手柄实时预览"/><ControllerChannelStatus :status="virtualOutputStatus" :gyro-supported="personaCapability.gyro" :gyro-enabled="shortcutRuntime?.gyroEnabled ?? gyroEnabled" :back-buttons="personaCapability.backButtons" :physical-gyro-supported="physicalGyroSupported" :physical-back-buttons="physicalBackButtons" :physical-back-buttons-captured="physicalBackButtonsCaptured" :usage="oemUsage" :virtual-enabled="displayTargetEnabled" :persona="displayPersona" :observed-keys="observedOemKeys" @inspect-keys="readPhysicalChannelCapabilities"/></div>
       </div>
