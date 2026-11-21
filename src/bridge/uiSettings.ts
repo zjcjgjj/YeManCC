@@ -5,6 +5,8 @@ import { getSettingsGeneration, assertSettingsGeneration, readSettingsSection, s
 
 export interface UiSettings {
   theme: 'blue-black' | 'red-black' | 'cyberpunk';
+  // 面板 UI 字体/整体缩放百分比（小屏掌机便于查看）。档位：80/90/100/110/120。
+  uiScalePercent: number;
   dynamicBackgroundEnabled: boolean;
   steamDynamicWallpaperEnabled: boolean;
   steamWallpaperPauseOnBattery: boolean;
@@ -29,6 +31,7 @@ export interface UiSettings {
 
 const DEFAULTS: UiSettings = {
   theme: 'blue-black',
+  uiScalePercent: 100,
   dynamicBackgroundEnabled: false,
   // Default ON; a saved OFF remains authoritative across restart and wake.
   steamDynamicWallpaperEnabled: true,
@@ -60,11 +63,13 @@ let writeQueue: Promise<void> = Promise.resolve();
 
 function normalize(input: Partial<UiSettings>): UiSettings {
   const theme = input.theme === 'red-black' || input.theme === 'cyberpunk' ? input.theme : 'blue-black';
+  const scalePercent = Number(input.uiScalePercent);
   const opacity = Number(input.backgroundOpacity);
   const blur = Number(input.backgroundBlur);
   const position = normalizeBackgroundPosition({ x: input.backgroundPositionX, y: input.backgroundPositionY });
   return {
     theme,
+    uiScalePercent: [80, 90, 100, 110, 120].includes(scalePercent) ? scalePercent : 100,
     dynamicBackgroundEnabled: input.dynamicBackgroundEnabled === true,
     steamDynamicWallpaperEnabled: input.steamDynamicWallpaperEnabled !== false,
     steamWallpaperPauseOnBattery: input.steamWallpaperPauseOnBattery === true,
