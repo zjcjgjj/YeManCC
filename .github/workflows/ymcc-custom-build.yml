@@ -25,17 +25,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: 应用 AIR PLUS 安全区补丁
-        shell: pwsh
-        run: |
-          if (!(Test-Path -LiteralPath 'yemancc-safe-fix.patch' -PathType Leaf)) {
-            throw '缺少 yemancc-safe-fix.patch，请把它上传到仓库根目录。'
-          }
-          git apply --whitespace=nowarn 'yemancc-safe-fix.patch'
-          if ($LASTEXITCODE -ne 0) { throw '补丁应用失败：仓库源码与补丁基线不一致。请从官方 DaVeZhouMK/YeManCC 的 main 分支 fork。' }
-          git --no-pager diff --stat
-          '补丁已应用。'
-
       - name: Setup pnpm 11.16.0
         uses: pnpm/action-setup@v4
         with:
@@ -50,7 +39,7 @@ jobs:
       - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.400
+          dotnet-version: 10.0.404
 
       - name: 激活 x64 MSVC 编译环境
         shell: pwsh
