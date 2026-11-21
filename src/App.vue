@@ -1143,6 +1143,9 @@ function onUiSettingsLoaded(): void {
   backgroundBlur.value = getBackgroundBlur();
   backgroundVideoAutoPause.value = getUiSetting('videoBatteryPause');
   updateLowBatteryStatic(topMonitorData.value);
+  // 字体/界面缩放偏好变更或加载后立即重算（无需新增事件监听）。
+  updateScale();
+  settleScale();
 }
 // ── UI 缩放层：设计基准 580×780，整体在窗口中居中显示 ──
 // 用户偏好 2026-08-04：在原本「按窗口高度贴齐」基础上再放大 30%，居中后左右两侧留空更协调。
@@ -1216,7 +1219,10 @@ function updateScale() {
   // The shared shell scale is route-independent. A wider monitor workbench
   // must adapt its own width, never shrink the sidebar, toolbar or other UI.
   const widthCapped = w / YMCC_SHELL_BASE_WIDTH;
-  setUiScale(Math.min(boosted, widthCapped));
+  // 用户字体/界面缩放偏好：小屏（如 6 寸 AYANEO AIR PLUS）可放大到 110%~120%。
+  // 乘在自动缩放之后，让档位作为最终视觉系数生效；zoom 同时作用于布局与命中测试。
+  const userFactor = Number(getUiSetting('uiScalePercent')) / 100 || 1;
+  setUiScale(Math.min(boosted, widthCapped) * userFactor);
   return changed;
 }
 // 呼出/尺寸变化后视口读数可能分多帧才稳定（WebView2 隐藏→恢复、DWM 合成延迟）。
