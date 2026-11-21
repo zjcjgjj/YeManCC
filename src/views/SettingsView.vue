@@ -110,6 +110,7 @@ async function onUpdatePredownloadChange(enabled:boolean){try{await setUpdatePre
 const backgroundFileLabel=ref('未选择背景文件'),backgroundPreviewUrl=ref('');
 
 const theme = ref<ThemeName>(getTheme());
+const uiScalePercent = ref<number>(getUiSetting('uiScalePercent'));
 const bgEnabled = ref(false);
 const bgBusy = ref(false);
 const bgKind = ref<'image' | 'video'>('image');
@@ -285,6 +286,18 @@ function onThemeChange(value: string | number): void {
   const next = value as ThemeName;
   theme.value = next;
   setTheme(next);
+}
+async function onUiScalePercentChange(value: string | number): Promise<void> {
+  const next = Number(value);
+  if (![80, 90, 100, 110, 120].includes(next)) return;
+  errMsg.value = '';
+  try {
+    await setUiSettings({ uiScalePercent: next });
+    uiScalePercent.value = getUiSetting('uiScalePercent');
+  } catch (error) {
+    uiScalePercent.value = getUiSetting('uiScalePercent');
+    errMsg.value = '字体大小保存失败：' + (error instanceof Error ? error.message : String(error));
+  }
 }
 async function onWindowPlacementChange(value: string | number): Promise<void> {
   if (value !== 'left' && value !== 'right') return;
@@ -862,6 +875,7 @@ async function openGithub() {
 function syncAppearanceSettings(): void {
   floatingSummonEnabled.value = getUiSetting('floatingSummonEnabled');
   fxSoundAutoRepair.value = getUiSetting('fxSoundAutoRepair');
+  uiScalePercent.value = getUiSetting('uiScalePercent');
   theme.value=getTheme();windowPlacement.value=getUiSetting('windowPlacement');
   bgOpacity.value=Math.round(getBackgroundOpacity()*100);bgBlur.value=getBackgroundBlur();
   if (!bgPositionEditing) bgPosition.value=getBackgroundPosition();
@@ -877,6 +891,7 @@ onMounted(async () => {
   await loadUiSettings();
   floatingSummonEnabled.value = getUiSetting('floatingSummonEnabled');
   fxSoundAutoRepair.value = getUiSetting('fxSoundAutoRepair');
+  uiScalePercent.value = getUiSetting('uiScalePercent');
   videoBatteryPause.value = getUiSetting('videoBatteryPause');
   windowPlacement.value = getUiSetting('windowPlacement');
   bgOpacity.value = Math.round(getBackgroundOpacity() * 100);
@@ -924,6 +939,23 @@ onBeforeUnmount(() => {
         full
         @update:model-value="onThemeChange"
       />
+    </section></div>
+ <div class="setting-color"><section class="card interface-scale-settings">
+      <h3 class="card-title"><InlineIcon name="star" /> 字体大小</h3>
+      <SegButton
+        :model-value="uiScalePercent"
+        :options="[
+          { value: 80, label: '80%' },
+          { value: 90, label: '90%' },
+          { value: 100, label: '100%' },
+          { value: 110, label: '110%' },
+          { value: 120, label: '120%' },
+        ]"
+        color="accent"
+        full
+        @update:model-value="onUiScalePercentChange"
+      />
+      <p class="muted" style="margin:8px 0 0;font-size:12px">6 寸小屏建议 110%–120%；整个面板等比放大，字体更清晰。</p>
     </section></div>
  <div class="setting-wallpaper"><section class="card background-settings-card" aria-label="动态壁纸">
  <h3 class="card-title"><InlineIcon name="monitor" />动态壁纸</h3>
