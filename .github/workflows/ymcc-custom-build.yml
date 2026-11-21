@@ -1,0 +1,114 @@
+name: YMCC AIR PLUS 定制编译（字体缩放 + AYANEO 专用键反馈/配置）
+
+# 用法：把本文件放到 fork 仓库的 .github/workflows/ 目录，
+# 再把 yemancc-safe-fix.patch 放到仓库根目录，
+# 然后在 Actions 页面手动 Run workflow 即可。不发布、不建 tag，只产出可下载的安装包。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  pnpm_config_verify_deps_before_run: 'false'
+  # 构建工作区必须在产品源码目录之外（官方构建脚本的硬性要求）
+  YEMAN_WORKSPACE_ROOT: ${{ github.workspace }}/../_ymcc_build_ws
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout（当前分支，含补丁文件）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 应用 AIR PLUS 安全区补丁
+        shell: pwsh
+        run: |
+          if (!(Test-Path -LiteralPath 'yemancc-safe-fix.patch' -PathType Leaf)) {
+            throw '缺少 yemancc-safe-fix.patch，请把它上传到仓库根目录。'
+          }
+          git apply --whitespace=nowarn 'yemancc-safe-fix.patch'
+          if ($LASTEXITCODE -ne 0) { throw '补丁应用失败：仓库源码与补丁基线不一致。请从官方 DaVeZhouMK/YeManCC 的 main 分支 fork。' }
+          git --no-pager diff --stat
+          '补丁已应用。'
+
+      - name: Setup pnpm 11.16.0
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+
+      - name: Setup Node 22.14.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: pnpm
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.400
+
+      - name: 激活 x64 MSVC 编译环境
+        shell: pwsh
+        run: |
+          $locator = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $locations = @(& $locator -latest -prerelease -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
+          if ($LASTEXITCODE -ne 0 -or !$locations) { throw '未找到 MSVC x64 工具链。' }
+          $entry = Join-Path ($locations | Select-Object -First 1) 'VC/Auxiliary/Build/vcvars64.bat'
+          $batch = Join-Path $env:RUNNER_TEMP 'ymcc-x64-env.cmd'
+          [IO.File]::WriteAllText($batch, "@echo off`r`ncall `"$entry`" >nul`r`nif errorlevel 1 exit /b 1`r`nset`r`n", [Text.Encoding]::ASCII)
+          $rows = & cmd.exe /d /c $batch
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC x64 环境激活失败。' }
+          foreach ($row in $rows) {
+            $i = $row.IndexOf('=')
+            if ($i -le 0) { continue }
+            $name = $row.Substring(0, $i)
+            if ($name -match '^(PATH|INCLUDE|LIB|LIBPATH|VCToolsInstallDir|WindowsSdkDir|WindowsSDKVersion|VSINSTALLDIR|VSCMD_ARG_TGT_ARCH)$') {
+              $row | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          # 与官方流水线一致：清空 Platform 环境变量，避免 MSBuild 输出目录偏移
+          'Platform=' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: 安装依赖
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw '依赖安装失败。' }
+
+      - name: 生成版本源并做类型检查
+        shell: pwsh
+        run: |
+          node scripts/write-version.mjs
+          if ($LASTEXITCODE -ne 0) { throw '版本源生成失败。' }
+          pnpm run type-check
+          if ($LASTEXITCODE -ne 0) { throw '类型检查失败：补丁存在类型错误。' }
+
+      - name: 编译并打包（FastRelease，跳过发布 gate）
+        shell: pwsh
+        run: |
+          & tools/publish.ps1 -WorkspaceRoot $env:YEMAN_WORKSPACE_ROOT -FastRelease
+          if ($LASTEXITCODE -ne 0) { throw '编译/打包失败。' }
+
+      - name: 校验产物存在
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:YEMAN_WORKSPACE_ROOT 'Release\Packages\YeManCC.zip'
+          if (!(Test-Path -LiteralPath $zip -PathType Leaf)) { throw 'YeManCC.zip 未生成。' }
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+          $size = (Get-Item -LiteralPath $zip).Length
+          "ZIP: $zip"
+          "Size: $size bytes"
+          "SHA256: $hash"
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: YeManCC-AIRPLUS-custom
+          path: ${{ env.YEMAN_WORKSPACE_ROOT }}/Release/Packages/YeManCC.zip
+          if-no-files-found: error
+          retention-days: 30
