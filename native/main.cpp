@@ -65298,7 +65298,46 @@ static void runKillBat(const json& expected) {
 }
 
 // 选择 + X：呼出 Windows 新触摸键盘（TabTip.exe）。后台进程直接启动，键盘自身为 topmost UI。
-static void openTouchKeyboard() {
+// 2026-11-22 修复：Win11 上 TabTip 一旦有常驻实例（约 16MB broker，面板启动即会被拉起），
+// 再 CreateProcess 它是彻底的空操作——实测不新建进程、不出现窗口。因此优先走 shell 的
+// ITipInvocation::Toggle（CLSID_UIHostNoLaunch，Win10/11 通用，能异步唤起宿主），只有在
+// 宿主类不可用或唤起后仍看不到面板时才回落启动 TabTip.exe（常驻时无害，不会重复弹窗）。
+// 语义固定为「打开」而非「切换」：keyboard.open 也走本函数（输入框聚焦触发），做成切换
+// 会让重复聚焦把键盘关掉。宿主对象要求 STA，而快捷键回调跑在 MTA 的 gamepad-serial-worker，
+// 所以整段在一次性 STA 线程内完成。
+struct YmccTipInvocation : IUnknown {
+    virtual HRESULT __stdcall Toggle(HWND hwndDesktop) = 0;
+};
+struct YmccTipInputPane : IUnknown {
+    virtual HRESULT __stdcall Advise(IUnknown* pWindow, IUnknown* pHandler, DWORD* pdwCookie) = 0;
+    virtual HRESULT __stdcall AdviseWithHWND(HWND hwnd, IUnknown* pHandler, DWORD* pdwCookie) = 0;
+    virtual HRESULT __stdcall Unadvise(DWORD pdwCookie) = 0;
+    virtual HRESULT __stdcall Location(RECT* prcInputPaneScreenLocation) = 0;
+};
+static const CLSID kTipClsidUiHostNoLaunch = {0x4ce576fa, 0x83dc, 0x4f88, {0x95, 0x1c, 0x9d, 0x07, 0x82, 0xb4, 0xe3, 0x76}};
+static const IID kTipIidInvocation = {0x37c994e7, 0x432b, 0x4834, {0xa2, 0xf7, 0xdc, 0xe1, 0xf1, 0x3b, 0x83, 0x4b}};
+static const CLSID kTipClsidInputPane = {0xd5120aa3, 0x46ba, 0x44c5, {0x82, 0x2d, 0xca, 0x80, 0x92, 0xc1, 0xfc, 0x72}};
+static const IID kTipIidInputPane = {0x5752238b, 0x24f0, 0x495a, {0x82, 0xf1, 0x2f, 0xd5, 0x93, 0x05, 0x67, 0x96}};
+// 输入面板是否在屏幕上；查询失败一律按「未打开」处理，由 Toggle 决定后续。
+static bool tipInputPaneVisible() {
+    YmccTipInputPane* pane = nullptr;
+    if (FAILED(CoCreateInstance(kTipClsidInputPane, nullptr, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+            kTipIidInputPane, reinterpret_cast<void**>(&pane))) || !pane) return false;
+    RECT rect{};
+    const bool read = SUCCEEDED(pane->Location(&rect));
+    pane->Release();
+    return read && rect.right > rect.left && rect.bottom > rect.top;
+}
+// true = Toggle 已被接受（面板异步出现）；false = 宿主不可用，需回落启动 TabTip。
+static bool tipToggleKeyboard() {
+    YmccTipInvocation* tip = nullptr;
+    if (FAILED(CoCreateInstance(kTipClsidUiHostNoLaunch, nullptr, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+            kTipIidInvocation, reinterpret_cast<void**>(&tip))) || !tip) return false;
+    const HRESULT hr = tip->Toggle(GetDesktopWindow());
+    tip->Release();
+    return SUCCEEDED(hr);
+}
+static void launchTabTipProcess() {
     std::wstring exe = L"C:\\Program Files\\Common Files\\microsoft shared\\ink\\TabTip.exe";
     if (!fspath::exists(exe)) return;
     STARTUPINFOW si{sizeof(si)};
@@ -65312,6 +65351,30 @@ static void openTouchKeyboard() {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
+}
+static void openTouchKeyboard() {
+    bool spawned = false;
+    try {
+        std::thread worker([] {
+            const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            // 已显示就不再 Toggle：这个入口同时服务输入框聚焦，重复调用不能把键盘关掉。
+            if (!tipInputPaneVisible()) {
+                const bool toggled = tipToggleKeyboard();
+                bool visible = false;
+                // Toggle 是异步的：给宿主最多 100ms 出现时间，没出现才走 TabTip 兜底。
+                for (int attempt = 0; toggled && attempt < 5 && !visible; ++attempt) {
+                    Sleep(20);
+                    visible = tipInputPaneVisible();
+                }
+                if (!visible) launchTabTipProcess();
+            }
+            if (SUCCEEDED(com)) CoUninitialize();
+        });
+        worker.join();
+        spawned = true;
+    } catch (...) {
+    }
+    if (!spawned) launchTabTipProcess();
 }
 
 // 选择 + A：内部模拟 Win+D 返回桌面；不启动脚本、不等待、不切回游戏窗口。
