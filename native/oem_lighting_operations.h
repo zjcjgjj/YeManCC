@@ -5,7 +5,7 @@
 #include <string_view>
 #include "../capabilities/hc-device-catalog.generated.h"
 namespace ymcc::lighting {
-inline constexpr char kCatalogSha256[] = "2adfaeeaf86c315f7defe45ebefadad359b2a510e6017e74993b0e81b6344b69";
+inline constexpr char kCatalogSha256[] = "c91da8978b247199b602323f80994b7e38b76c53cf9216bbec21616a46eceaee";
 inline constexpr const char* kExtensionLightingClasses[] = {"HandheldCompanion.Devices.OneXPlayer3", "HandheldCompanion.Devices.AYANEO3", "HandheldCompanion.Devices.AYANEONEXT2", "HandheldCompanion.Devices.OneXPlayerX2MiniPro"};
 inline bool identityMatches(std::string_view actual, std::string_view expected) noexcept {
     for (const char* cls : kExtensionLightingClasses) if (actual == cls && expected == cls) return true;
