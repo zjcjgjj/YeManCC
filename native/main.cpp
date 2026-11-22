@@ -60523,15 +60523,22 @@ static void gameOverlayKeyboardLeaseAcquire(HWND surface, HWND target) {
     bool fse = false;
     try { const auto platform = ymcc::bootmode::readPlatform();
         fse = platform.activeKnown && platform.active; } catch (...) { fse = false; }
+    // 独占 D3D 全屏是真正会被"切出去"的那种：无边框全屏抢前台没有副作用，
+    // 但独占全屏一旦失去前台会被最小化，游戏等于被打断。只在这一种情况下跳过。
+    QUERY_USER_NOTIFICATION_STATE notification = QUNS_NOT_PRESENT;
+    const bool d3dFullscreen = SUCCEEDED(SHQueryUserNotificationState(&notification)) &&
+        notification == QUNS_RUNNING_D3D_FULL_SCREEN;
     const char* skip = nullptr;
     if (!gameOverlayKeyboardTakeoverEnabled()) skip = "takeover-disabled";
     else if (!surface || !IsWindow(surface)) skip = "surface-unavailable";
     else if (!target || !IsWindow(target)) skip = "target-unavailable";
-    else if (fse) skip = "exclusive-fullscreen";
+    else if (fse) skip = "gaming-fullscreen-experience";
+    else if (d3dFullscreen) skip = "exclusive-d3d-fullscreen";
     if (skip) {
         appendNativeLifecycleLog("game-overlay-keyboard-lease", {{"phase", "skipped"}, {"reason", skip},
             {"surface", reinterpret_cast<std::uintptr_t>(surface)}, {"target", reinterpret_cast<std::uintptr_t>(target)},
-            {"fse", fse}, {"keyboardScope", "panel-only"}, {"screenVisibleVerified", false}});
+            {"fse", fse}, {"d3dFullscreen", d3dFullscreen}, {"keyboardScope", "panel-only"},
+            {"screenVisibleVerified", false}});
         return;
     }
     // 先让窗口可激活，再抢前台：NOACTIVATE 的窗口即使用 SetForegroundWindow 也
