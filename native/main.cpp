@@ -10040,22 +10040,50 @@ static bool refocusWebView(bool allowAltFallback = false,
                 ymcc::lightforeground::processCreated(originPid) != origin.originCreated)
                 return skipped("keyboard-fallback-skipped-context-changed");
         }
-        INPUT inputs[2]{};
-        inputs[0].type = INPUT_KEYBOARD;
-        inputs[0].ki.wVk = VK_MENU;
-        inputs[1] = inputs[0];
-        inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-        const UINT inserted = keyboardSelfSendWithEvidence(ymcc::keyboardEvents::SourceId::FocusAltFallback,2,inputs);
-        // A partially inserted down/up pair must release the inserted Alt.
-        // It is not a successful handoff and must not authorize navigation.
-        if (inserted == 1)
-            (void)keyboardSelfSendWithEvidence(ymcc::keyboardEvents::SourceId::FocusAltFallback,1,inputs + 1);
-        if (g_focusSession.lightNoGame)
-            appendNativeLifecycleLog("summon-light-foreground", {{"session", sequence},
-                {"reason", inserted == 2 ? "keyboard-fallback-dispatched" : "keyboard-fallback-input-incomplete"},
-                {"attempted", true}, {"error", inserted}, {"foreground", focusMainWindowIsForeground()}});
-        if (inserted != 2) return false;
-        focused = attempt();
+        // Lossless Scaling 的缩放热键默认是 Alt+Ctrl+S（本机实测 Hotkey=S /
+        // HotkeyModifierKeys=Alt Control）。下面注入的 Alt 脉冲若恰逢 Ctrl 或 S
+        // 正被按住（游戏中极常见：S=后退、Ctrl=蹲下/疾跑），就会凑成该组合热键，
+        // 让 LS 反复切换缩放并抢回前台——表现为按呼出键只看到画面缩小还原/放大，
+        // 面板却出不来。检测到热键被"武装"时改用 AttachThreadInput 抢焦点，
+        // 不向系统注入任何按键；正常场景（没有按住 Ctrl/S）行为完全不变。
+        BYTE comboState[256]{};
+        const bool lsHotkeyArmed = GetKeyboardState(comboState) &&
+            ((comboState[VK_CONTROL] & 0x80) || (comboState[VK_LCONTROL] & 0x80) ||
+             (comboState[VK_RCONTROL] & 0x80) || (comboState['S'] & 0x80) ||
+             (comboState[VK_MENU] & 0x80) || (comboState[VK_LMENU] & 0x80) ||
+             (comboState[VK_RMENU] & 0x80));
+        if (lsHotkeyArmed) {
+            const DWORD foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+            const DWORD currentThread = GetCurrentThreadId();
+            bool attached = false;
+            if (foregroundThread && foregroundThread != currentThread)
+                attached = AttachThreadInput(currentThread, foregroundThread, TRUE) != FALSE;
+            if (attached) {
+                focused = attempt();
+                AttachThreadInput(currentThread, foregroundThread, FALSE);
+            }
+            appendNativeLifecycleLog("summon-alt-fallback", {{"session", sequence},
+                {"reason", "lossless-hotkey-armed"}, {"threadInput", attached},
+                {"foreground", focusMainWindowIsForeground()}});
+            if (!focused) return false;
+        } else {
+            INPUT inputs[2]{};
+            inputs[0].type = INPUT_KEYBOARD;
+            inputs[0].ki.wVk = VK_MENU;
+            inputs[1] = inputs[0];
+            inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            const UINT inserted = keyboardSelfSendWithEvidence(ymcc::keyboardEvents::SourceId::FocusAltFallback,2,inputs);
+            // A partially inserted down/up pair must release the inserted Alt.
+            // It is not a successful handoff and must not authorize navigation.
+            if (inserted == 1)
+                (void)keyboardSelfSendWithEvidence(ymcc::keyboardEvents::SourceId::FocusAltFallback,1,inputs + 1);
+            if (g_focusSession.lightNoGame)
+                appendNativeLifecycleLog("summon-light-foreground", {{"session", sequence},
+                    {"reason", inserted == 2 ? "keyboard-fallback-dispatched" : "keyboard-fallback-input-incomplete"},
+                    {"attempted", true}, {"error", inserted}, {"foreground", focusMainWindowIsForeground()}});
+            if (inserted != 2) return false;
+            focused = attempt();
+        }
     }
     if (!focused || !current() || !g_ctrl) return false;
     const auto controller = g_ctrl;
@@ -90077,14 +90105,22 @@ static void nativeAyaLightingRunRestore(unsigned long long generation,const std:
     }catch(const std::exception&){result={{"ok",false},{"reason","aya-lighting-restore-exception"}};}
     catch(...){result={{"ok",false},{"reason","aya-lighting-restore-exception"}};}
     g_ayaLightingRestoreQueued.store(false,std::memory_order_release);
+    // 只在真正成功后才记下 generation：失败/被跳过时保留重试机会，否则
+    // nativeAyaLightingResume 的去重会把同一代后续唤醒通知全部挡掉，灯就停在
+    // 固件默认的蓝灯呼吸（休眠掉电释放 0x87 控制权后的状态）。
+    const bool restoreOk=result.value("ok",false);
+    if(restoreOk)g_ayaLightingLastResume.store(generation,std::memory_order_release);
     try{appendNativeLifecycleLog("aya-lighting-restore",{{"deviceClass",model},{"generation",generation},
-        {"eventReasons",reasons},{"ok",result.value("ok",false)},{"reason",result.value("reason",std::string{})},
+        {"eventReasons",reasons},{"ok",restoreOk},{"reason",result.value("reason",std::string{})},
         {"physicalEffectVerified",false}});}catch(...){}
     if(g_ayaLightingRestoreReasons.load(std::memory_order_acquire))nativeAyaLightingScheduleRestore();
 }
 static void nativeAyaLightingScheduleRestore() {
     const auto context=nativeAyaLightingContext();
-    if(!context.managed||!context.ready){g_ayaLightingRestoreReasons.store(0,std::memory_order_release);return;}
+    // 未就绪（硬件写闸门未开/generation 切换中）时原先直接清零请求且不重试，
+    // 唤醒那一瞬间的时机竞争会永久丢失这次 restore。改为保留 reasons，
+    // 由后续 WM_POWER_RESUME_COMMIT 重投 / WTS 解锁通知再触发，直到成功或退出。
+    if(!context.managed||!context.ready)return;
     if(g_ayaLightingRestoreQueued.exchange(true,std::memory_order_acq_rel))return;
     if(!poolSubmit([generation=context.power,model=context.model,sequence=g_ayaLightingWrites.sequence()]{nativeAyaLightingRunRestore(generation,model,sequence);})){ 
         g_ayaLightingRestoreQueued.store(false,std::memory_order_release);
