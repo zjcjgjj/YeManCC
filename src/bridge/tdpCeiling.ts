@@ -16,13 +16,15 @@
 //     15W 时把天花板抬到该值，只升不降（MCHBAR 是上界，低于它的值天然生效）。
 //   · 「最大 TDP」下拉（ContinuousPerformancePanel 的 tdpCeiling）决定滑块上限，
 //     滑块值再经 ensureTdpCeilingAtLeast 落到 MCHBAR，两者因此自然对齐。
-//   · 启动时按设置文件里的 intelCeiling 重新落一次。
+//   · 启动时按设置文件里的 intelCeiling 重新落一次；
+//     休眠唤醒后再静默重落一次（见 syncTdpCeilingAfterWake）——MCHBAR 是易失的，
+//     掉电后进程内的 knownCeilingW 会 stale，必须无条件重写一次才能让设定生效。
 //
 // 边界：
 //   · 天花板只是上限，不替用户决定实际功耗；实际值仍由面板 TDP 滑块/性能调度决定。
 //   · 驱动（签名有效的 MMIO 副本）不可用、Secure Boot 开启、或脚本失败时，
 //     一律降级为「不干预硬件」——绝不因为这里失败而拦住界面或改动其它设置。
-//   · 硬件状态是易失的（重启后固件还原 15W），所以每次启动都要重新落一次。
+//   · 硬件状态是易失的（重启/休眠掉电后固件还原 15W），所以每次启动与唤醒都要重新落一次。
 import { shell } from './api';
 import { getPowerControlDir } from './yeman';
 import { getSettingsGeneration, readSettingsSection, saveSettingsSection } from './settingsRepository';
@@ -240,6 +242,31 @@ export async function revertTdpCeiling(): Promise<TdpCeilingState> {
 export async function syncTdpCeilingOnStartup(): Promise<TdpCeilingState | null> {
   const config = await readTdpCeilingConfig();
   if (!config.enabled) return null;
+  return await applyTdpCeiling(config.watts).catch(error => ({
+    ok: false, status: 'error' as const, ceilingW: 0, reason: (error as Error).message,
+  }));
+}
+
+/**
+ * 休眠唤醒后静默重落天花板。永不抛异常——唤醒链路上它只能是尽力而为的补偿。
+ *
+ * 为什么必须单独做一次（不能只靠 ensureTdpCeilingAtLeast）：
+ *   休眠掉电把 MCHBAR +0x59A0 的 PL1 打回固件 15W，但本进程内存里的
+ *   knownCeilingW 还停在休眠前的值（通常 25W）。唤醒后 daemon 只做句柄
+ *   reinitialize、不重新下发 TDP；即使用户重新拖滑块走 setTdp，
+ *   ensureTdpCeilingAtLeast 也会因 target <= knownCeilingW 直接跳过下发，
+ *   天花板就一直停在 15W，把面板设定的 22W 压住。
+ *   和启动对账一样，唤醒后必须无条件重写一次 MCHBAR：先作废进程内的 stale
+ *   标记，再用 -Watts（非 -MinWatts，脚本因此不会走 onlyRaise 的跳过分支）
+ *   落回设置里的「最大 TDP」。成功后 observeCeiling 会把 knownCeilingW 校正
+ *   为真实值，后续 ensure 恢复正常。
+ */
+export async function syncTdpCeilingAfterWake(): Promise<TdpCeilingState | null> {
+  const config = await readTdpCeilingConfig();
+  if (!config.enabled) return null;
+  // 作废休眠前留下的 stale 缓存：内存标记与状态读回都不可信了。
+  knownCeilingW = 0;
+  invalidateTdpCeilingState();
   return await applyTdpCeiling(config.watts).catch(error => ({
     ok: false, status: 'error' as const, ceilingW: 0, reason: (error as Error).message,
   }));

@@ -83,7 +83,7 @@ import { createPowerResumeQueue, runPowerResumeTransaction } from '@/bridge/powe
 import { readSettingsSection, saveSettingsSection } from '@/bridge/settingsRepository';
 import { isUiVisible, onUiVisibilityChange, setNativeWindowVisible, startUiPowerReconciliation } from '@/bridge/uiLifecycle';
 import { syncLightingFromSettings } from '@/bridge/startupLightingSync';
-import { syncTdpCeilingOnStartup, TDP_CEILING_FIRMWARE_W } from '@/bridge/tdpCeiling';
+import { syncTdpCeilingAfterWake, syncTdpCeilingOnStartup, TDP_CEILING_FIRMWARE_W } from '@/bridge/tdpCeiling';
 import { onSharedPowerLifecycle, getSharedPowerLifecycle, requestSharedPowerLifecycleReadyConfirmation, isSharedPowerLifecycleAdmitted, type SharedPowerLifecycleSnapshot } from '@/bridge/powerLifecycleState';
 import { rememberPowerSourceMode, onPowerSourceNotification, startForegroundPowerSourceRefresh } from '@/bridge/powerSource';
 import { tdpRuntimeStore } from '@/bridge/tdpRuntimeState';
@@ -1696,6 +1696,11 @@ function scheduleResumeTransaction(generation: number): void {
       needsConfirmedFollowup = true;
       networkAccelerationWake.schedule(targetGeneration);
       resumeRetryCounts.delete(targetGeneration);
+      // 休眠掉电把 MCHBAR 的 PL1 打回固件 15W，而进程内 knownCeilingW 还停在
+      // 休眠前的值，后续 ensureTdpCeilingAtLeast 会因 target<=knownCeilingW 跳过
+      // 下发，面板设的 TDP 就被 15W 压住。这里每代唤醒无条件重落一次天花板
+      // （静默、失败不拦唤醒链），与启动对账同一条 -Watts 路径。
+      void syncTdpCeilingAfterWake();
       // The resident owner can keep healing even if a later scheme read fails.
       requestGamePolicyTdpReconciliation(targetGeneration);
     }
