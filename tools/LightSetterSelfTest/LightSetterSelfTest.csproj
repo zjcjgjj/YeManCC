@@ -9,6 +9,8 @@
  <ItemGroup>
 
   <Compile Include="AyaneoOemLightingRestoreTests.cs" />
+  <Compile Include="AyaneoCeiiLightingTests.cs" />
+  <Compile Include="../../FanLab/LightSetter/AyaneoCeiiLighting.cs" Link="AyaneoCeiiLighting.cs" />
   <Compile Include="../../FanLab/LightSetter/AyaneoOemLightingRestore.cs" Link="AyaneoOemLightingRestore.cs" />
   <Compile Include="../../FanLab/LightSetter/AyaneoOemRestoreWindowsPorts.cs" Link="AyaneoOemRestoreWindowsPorts.cs" />
   <Compile Include="../../native/BatteryHost/SuperXCheckedEcWriter.cs" Link="CheckedLpcTransport.cs" />

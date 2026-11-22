@@ -3,7 +3,7 @@ using System;
 namespace YeManFanBackend.Capabilities;
 public static partial class HcLightingCapabilityCatalog
 {
-    public const string CatalogSha256 = "b81166ee3bc929ddcbe7e538dbb8fc47b2c793ffbc82df7bc8f30d8a66df010c";
+    public const string CatalogSha256 = "2adfaeeaf86c315f7defe45ebefadad359b2a510e6017e74993b0e81b6344b69";
     private static readonly LightingCapabilityDescriptor[] GeneratedRoutes = {
         new("hc.device.AOKZOEA1", true, false, HcSourceLedEffect.SolidColor | HcSourceLedEffect.Rainbow, false, false, false, false, false),
         new("hc.device.AOKZOEA1Pro", true, false, HcSourceLedEffect.SolidColor | HcSourceLedEffect.Rainbow, false, false, false, false, false),
@@ -16,7 +16,7 @@ public static partial class HcLightingCapabilityCatalog
         new("hc.device.AYANEOAIRLite", true, true, HcSourceLedEffect.SolidColor, true, false, false, false, false),
         new("hc.device.AYANEOAIRPlusAMD", true, true, HcSourceLedEffect.SolidColor, true, false, false, false, false),
         new("hc.device.AYANEOAIRPlusAMDMendocino", true, true, HcSourceLedEffect.SolidColor, true, false, false, false, false),
-        new("hc.device.AYANEOAIRPlusIntel", true, true, HcSourceLedEffect.SolidColor, true, false, false, false, false),
+        new("hc.device.AYANEOAIRPlusIntel", true, true, HcSourceLedEffect.SolidColor | HcSourceLedEffect.Breathing, true, false, false, false, false),
         new("hc.device.AYANEOAIRPro", true, true, HcSourceLedEffect.SolidColor, true, false, false, false, false),
         new("hc.device.AYANEOFlip1SKB", true, true, HcSourceLedEffect.SolidColor, true, false, false, false, false),
         new("hc.device.AYANEOFlipKB", true, true, HcSourceLedEffect.SolidColor, true, false, false, false, false),

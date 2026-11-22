@@ -9,6 +9,11 @@ export interface DropdownOption {
   disabled?: boolean;
   /** Optional visual grouping; headers are never selectable or gamepad targets. */
   group?: string;
+  /**
+   * 可选颜色色块（CSS 颜色串）。颜色类下拉框用它给出"标注"到底对应哪个颜色的
+   * 直观参照——只有文字名时，灯的观感和名字对不上就无从比对。
+   */
+  swatch?: string;
 }
 
 const props = defineProps<{
@@ -59,6 +64,11 @@ const selectedLabel = computed(() => {
 const selectedSub = computed(() => {
   const o = props.options.find((op) => op.value === props.modelValue);
   return props.selectedSubText ?? o?.sub ?? '';
+});
+// 触发器上也显示当前颜色的色块，保证"选的是什么色"始终可见。
+const selectedSwatch = computed(() => {
+  const o = props.options.find((op) => op.value === props.modelValue);
+  return o?.swatch ?? '';
 });
 
 function colorVar(): string {
@@ -362,6 +372,7 @@ function onGpNav(e: Event) {
       @keydown="onTriggerKey"
     >
       <span class="dd-value" :class="{ 'dd-placeholder': options.findIndex((o) => o.value === modelValue) < 0 }">
+        <span v-if="selectedSwatch" class="dd-swatch" :style="{ background: selectedSwatch }" aria-hidden="true" />
         <span class="dd-selected-label">{{ selectedLabel }}</span>
         <span v-if="showSelectedSub && selectedSub" class="dd-selected-sub">{{ selectedSub }}</span>
       </span>
@@ -396,6 +407,7 @@ function onGpNav(e: Event) {
             @click="select(i)"
           >
             <span class="dd-opt-label">
+              <span v-if="o.swatch" class="dd-swatch" :style="{ background: o.swatch }" aria-hidden="true" />
               {{ o.label }}
               <span v-if="o.sub" class="dd-opt-sub">{{ o.sub }}</span>
             </span>
@@ -549,6 +561,19 @@ function onGpNav(e: Event) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 颜色色块：与文字基线对齐的小圆角方块，深浅背景都看得清。
+   14px 是 6 寸屏下的下限——更小的方块看不出色相，色卡就失去比对意义了。 */
+.dd-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 7px;
+  vertical-align: -3px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.28);
+  flex: 0 0 auto;
 }
 .dd-opt-disabled {
   opacity: 0.4;

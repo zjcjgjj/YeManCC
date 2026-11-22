@@ -21,6 +21,10 @@ const route = useRoute();
 // Retired pages stay absent in every performance mode and device state.
 const visibleRoutes = computed(() => residentNavigationRoutes(ROUTES, false, radialTestingEnabled.value));
 
+// 侧栏保持平铺：11 行导航在 6 寸屏上已经占满，再加分组标题会把行距压到
+// 自适应降级的边缘（fitRail 会一路降到 density 3-4，图标跟着缩小）。
+// router.ts 里保留的 group 字段只是元数据，不参与渲染。
+
 const railRoot=ref<HTMLElement|null>(null),railItems=ref<HTMLElement|null>(null);
 let railObserver:ResizeObserver|undefined,railFrame=0,railMounted=false;
 function setRailDensity(level:number,iconScale=1):void {
@@ -195,6 +199,10 @@ async function quit() {
   color: var(--text-dim);
   white-space: nowrap;
 }
+/* 底板必须是实体：--bg-nav 已经是 0.98 alpha 的“接近实体”，再叠 color-mix(...70%,
+   transparent) 会把不透明度压到 0.69，正文白字有 31% 透上来，导航文字和页面内容
+   直接叠在一起（还没 backdrop-filter 做模糊补偿，穿透的是清晰的文字）。侧栏承载
+   导航可读性，这里不做半透明美化。 */
 .navrail {
   --nav-icon-scale: 1;
   --nav-row-gap: 4px;
@@ -209,7 +217,7 @@ async function quit() {
   --nav-quit-pad: 8px;
   width: var(--nav-w);
   flex: 0 0 var(--nav-w);
-  background: color-mix(in srgb, var(--bg-nav) 70%, transparent);
+  background: var(--bg-nav);
   position: relative;
   z-index: 1;
   border-right: 1px solid #1c2533;

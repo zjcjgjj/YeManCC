@@ -45,7 +45,7 @@ onBeforeUnmount(()=>window.removeEventListener('ipc:gamepad-back',back));
 </template>
 <style scoped>
 .touch-mouse-page{--touch-mouse-line:color-mix(in srgb,var(--accent) 20%,rgba(138,157,180,.18));gap:10px!important;min-width:0;padding-bottom:10px!important}
-.touch-mouse-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;padding:3px 1px 0}
+.touch-mouse-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;padding:3px 1px 10px}
 .touch-mouse-header h1{display:flex;align-items:center;gap:7px;min-width:0;margin:0!important;padding:0!important;border:0!important;white-space:nowrap;font-size:20px;font-weight:650;line-height:1.2}
 .touch-mouse-header h1 .app-icon{font-size:20px;color:#eef0f2}
 .touch-mouse-persona{display:inline-flex;align-items:center;gap:6px;min-height:30px;padding:4px 8px;border:1px solid var(--touch-mouse-line);border-radius:7px;background:var(--console-surface-alt);font-size:13px;color:var(--text);white-space:nowrap}

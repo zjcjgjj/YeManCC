@@ -11,10 +11,18 @@ const props = withDefaults(
     color?: 'ac' | 'dc' | 'accent';
     full?: boolean;
     disabled?: boolean;
+    wrap?: boolean;
+    /**
+     * 固定列数（>0 时生效）。换成等宽网格而不是 flex 换行：
+     * flex 换行是"贪心"的，最后一行剩下的项会被拉满整宽，显得又宽又乱；
+     * 网格让每格等宽，行数由列数决定，永远不会溢出或出现畸形宽格。
+     * 小屏 6 个档位用 3 列，正好两行。
+     */
+    columns?: number;
     gpRow?: number | string;
     gpColStart?: number | string;
   }>(),
-  { color: 'accent', full: false, disabled: false }
+  { color: 'accent', full: false, disabled: false, wrap: false }
 );
 const emit = defineEmits<{ (e: 'update:modelValue', v: string | number): void }>();
 function pick(v: string | number) {
@@ -25,7 +33,11 @@ const accentVar = props.color === 'dc' ? 'var(--dc-accent)' : 'var(--accent)';
 </script>
 
 <template>
-  <div class="seg" :class="{ full: full, disabled: disabled }" :style="{ '--seg-accent': accentVar }">
+  <div
+    class="seg"
+    :class="{ full: full, disabled: disabled, wrap: wrap, grid: columns > 0 }"
+    :style="{ '--seg-accent': accentVar, '--seg-cols': String(columns > 0 ? columns : 1) }"
+  >
     <button
       v-for="(o, i) in options"
       :key="o.value"
@@ -59,6 +71,44 @@ const accentVar = props.color === 'dc' ? 'var(--dc-accent)' : 'var(--accent)';
 .seg.full .seg-btn {
   flex: 1 1 0;
   min-width: 0;
+}
+/* [YMCC-AIRPLUS-FIX] wrap mode: let options reflow onto multiple rows on narrow
+   screens so labels are never squeezed into ellipsis. Used by the font-size card. */
+.seg.wrap {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+/* 等宽网格模式：列数固定、每格等宽，行由数量决定，不会出现被拉满的畸形末格。 */
+.seg.grid {
+  display: grid;
+  grid-template-columns: repeat(var(--seg-cols, 1), minmax(0, 1fr));
+  gap: 7px;
+  row-gap: 8px;
+  width: 100%;
+}
+.seg.grid .seg-btn {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 6px;
+  font-size: 14px;
+}
+.seg.grid .seg-main {
+  overflow: visible;
+  text-overflow: clip;
+}
+.seg.full.wrap .seg-btn {
+  flex: 1 0 auto;
+  min-width: 62px;
+}
+.seg.wrap .seg-btn {
+  font-size: 14px;
+  min-height: 42px;
+  padding: 0 10px;
+}
+.seg.wrap .seg-main {
+  overflow: visible;
+  text-overflow: clip;
 }
 .seg-btn {
   display: inline-flex;

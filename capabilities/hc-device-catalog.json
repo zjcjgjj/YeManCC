@@ -14121,7 +14121,8 @@
           "brightness": true,
           "secondColor": true,
           "declaredEffects": [
-            "solid"
+            "solid",
+            "breathing"
           ],
           "presetDeclared": false,
           "presetAvailable": false,
@@ -14180,7 +14181,9 @@
               "constantBooleanReturn": true
             }
           },
-          "independent": null
+          "independent": null,
+          "origin": "reviewed-effect-override",
+          "effectOverrideReason": "本机灯光由本仓原生写入器 FanLab/LightSetter/AyaneoCeiiLighting.cs 接管，呼吸由宿主逐帧推颜色实现（MCU 无循环呼吸波形，与厂商 AYASpace 3.2.0.4 的 EcRgb.cpp 同构）；冻结 HC 的源扫描只声明 SolidColor。"
         },
         {
           "deviceId": "hc.device.AYANEOAIRPro",
@@ -15626,7 +15629,7 @@
             {
               "role": "entry",
               "path": "FanLab/LightSetter/Program.cs",
-              "sha256": "ff6e7a0a51e2899f60ef89ffcf42b14b597aa2983d1300d9582b69f1e4e51359"
+              "sha256": "aa96595391e59d3820634a556814b76a5cd28356c1cf09842d33d21cb746313f"
             },
             {
               "role": "owner",
@@ -17601,7 +17604,7 @@
             {
               "role": "entry",
               "path": "FanLab/LightSetter/Program.cs",
-              "sha256": "ff6e7a0a51e2899f60ef89ffcf42b14b597aa2983d1300d9582b69f1e4e51359"
+              "sha256": "aa96595391e59d3820634a556814b76a5cd28356c1cf09842d33d21cb746313f"
             },
             {
               "role": "owner",
@@ -17628,6 +17631,18 @@
             "Windows reports are ID0 plus the64-byte V2 payload. Brightness follows HueSync ties-even whole-update levels1/3/4; percent0 sends disabled/level1. HC always-enabled zero is not the off encoding.",
             "Source-bound software admission and complete writes do not claim hardware, descriptor capture, physical effects or full-tree snapshot currency."
           ]
+        }
+      ],
+      "reviewedEffectOverrides": [
+        {
+          "device": "AYANEOAIRPlusIntel",
+          "ledEffects": [
+            "SolidColor",
+            "Breathing"
+          ],
+          "reason": "本机灯光由本仓原生写入器 FanLab/LightSetter/AyaneoCeiiLighting.cs 接管，呼吸由宿主逐帧推颜色实现（MCU 无循环呼吸波形，与厂商 AYASpace 3.2.0.4 的 EcRgb.cpp 同构）；冻结 HC 的源扫描只声明 SolidColor。",
+          "verifiedOn": "AB05-INTEL 实机 2026-11-21：4.5s 周期 12.4fps 呼吸目视确认",
+          "widensOnly": true
         }
       ],
       "oemOwnership": [
@@ -17780,7 +17795,7 @@
           "reason": "Retain the reviewed in-process MSI command-interface HID writer; exact model registration replaces family-only dispatch"
         }
       ],
-      "catalogSha256": "b81166ee3bc929ddcbe7e538dbb8fc47b2c793ffbc82df7bc8f30d8a66df010c"
+      "catalogSha256": "2adfaeeaf86c315f7defe45ebefadad359b2a510e6017e74993b0e81b6344b69"
     },
     "battery": {
       "schemaVersion": 1,

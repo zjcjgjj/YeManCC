@@ -210,7 +210,7 @@
         {
           "role": "entry",
           "path": "FanLab/LightSetter/Program.cs",
-          "sha256": "ff6e7a0a51e2899f60ef89ffcf42b14b597aa2983d1300d9582b69f1e4e51359"
+          "sha256": "aa96595391e59d3820634a556814b76a5cd28356c1cf09842d33d21cb746313f"
         },
         {
           "role": "owner",
@@ -237,6 +237,18 @@
         "Windows reports are ID0 plus the64-byte V2 payload. Brightness follows HueSync ties-even whole-update levels1/3/4; percent0 sends disabled/level1. HC always-enabled zero is not the off encoding.",
         "Source-bound software admission and complete writes do not claim hardware, descriptor capture, physical effects or full-tree snapshot currency."
       ]
+    }
+  ],
+  "reviewedEffectOverrides": [
+    {
+      "device": "AYANEOAIRPlusIntel",
+      "ledEffects": [
+        "SolidColor",
+        "Breathing"
+      ],
+      "reason": "本机灯光由本仓原生写入器 FanLab/LightSetter/AyaneoCeiiLighting.cs 接管，呼吸由宿主逐帧推颜色实现（MCU 无循环呼吸波形，与厂商 AYASpace 3.2.0.4 的 EcRgb.cpp 同构）；冻结 HC 的源扫描只声明 SolidColor。",
+      "verifiedOn": "AB05-INTEL 实机 2026-11-21：4.5s 周期 12.4fps 呼吸目视确认",
+      "widensOnly": true
     }
   ],
   "reviewedExtensionModels": [

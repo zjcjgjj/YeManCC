@@ -1538,8 +1538,11 @@ async function detectMotionSources(): Promise<void> {
 .gyro-integrated-page .integrated-calib-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin:0;padding:0;border:0;background:transparent}.gyro-integrated-page .integrated-calib-row .calib-static{display:flex;flex-direction:column;align-items:stretch;gap:6px}.gyro-integrated-page .integrated-calib-row .calib-auto{min-width:0}.gyro-integrated-page .integrated-calib-row .row-label{font-size:12px;color:var(--text-dim)}.gyro-integrated-page .integrated-calib-row .calib-btn{min-height:36px;font-size:13px}.gyro-integrated-page .integrated-calib-row .calib-auto .toggle-row{min-height:36px!important;padding:0!important;gap:5px}.gyro-integrated-page .integrated-calib-row .calib-auto .toggle-label{font-size:13px}.gyro-integrated-page .gyro-power-row{gap:8px}.gyro-integrated-page .gyro-power-btn{font-size:13px;padding:8px 6px;line-height:1.4;min-height:42px}.gyro-integrated-page .gyro-status-preview{margin-bottom:12px}
 
 /* The overview has one heading, two equal actions and one aligned preset row. */
-.gyro-page-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;padding:3px 1px 2px}
-.gyro-page-heading h1{font-size:20px;line-height:1.3;margin:0;font-weight:650}
+/* 底部 10px 与 IntegratedPage 的 .console-heading 对齐：这三页都用 hide-heading
+   自绘页头（要带按钮/图标），之前底部留白各写各的（2px / 0px），导致标题有时紧贴
+   第一张卡片。字号、字重、行高也一并按集成页基准（20px / 650 / 1.2）。 */
+.gyro-page-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;padding:3px 1px 10px}
+.gyro-page-heading h1{font-size:20px;line-height:1.2;margin:0;font-weight:650}
 .gyro-page-heading .gyro-simulation-open{display:flex;align-items:center;justify-content:center;gap:6px;min-height:36px;padding:6px 12px;border:1px solid var(--accent-border);border-radius:8px;font:inherit;font-size:14px;color:var(--accent);background:var(--accent-surface);white-space:nowrap;cursor:pointer}
 .gyro-overview-card>.field-stack{gap:12px}
 .gyro-integrated-page .gyro-power-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}

@@ -1497,6 +1497,15 @@ function handleGamepadBack(opts: GamepadEngineOptions): void {
     log(opts, 'B · 退出滑块编辑');
   } else {
     setGamepadFocused(null);
+    // 页面没有消费 B：先把机会交给宿主的「一级菜单收起」策略（App.vue）。
+    // 页面内返回、浮层关闭、滑块编辑都会先 preventDefault，不会走到这里；
+    // 所以这条兜底只影响"确实没人要这个 B"的场合。兜底没人接时保持旧行为。
+    const unhandled = new CustomEvent('ipc:gamepad-back-unhandled', { cancelable: true });
+    window.dispatchEvent(unhandled);
+    if (unhandled.defaultPrevented) {
+      log(opts, 'B · 收起面板');
+      return;
+    }
     const active = document.activeElement as HTMLElement | null;
     active?.blur?.();
     log(opts, 'B · 返回');

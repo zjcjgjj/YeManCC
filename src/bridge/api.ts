@@ -505,6 +505,11 @@ export const windowApi = {
   center: () => invoke<boolean>('window.center'),
   /** 将主窗口对齐到当前显示器工作区左侧/右侧（垂直居中，native 物理像素计算，与 center 同源）。 */
   place: (side: 'left' | 'right') => invoke<boolean>('window.place', { side }),
+  /**
+   * 字体/界面档位（80/90/100/110/120）。fullHeight 吸附窗按档位同比加宽，
+   * 使前端舞台始终保持设计宽度；字号变大由窗口宽度换来，不挤压布局。
+   */
+  uiScalePercent: (percent: number) => invoke<boolean>('window.uiScalePercent', { percent }, { timeoutMs: 3000 }),
   setTitle: (title: string) => invoke<boolean>('window.setTitle', { title }),
   /** Create a real top-level child window owned by the YMCC shell. */
   createChild: (options: { title: string; width: number; height: number; url: string }) =>

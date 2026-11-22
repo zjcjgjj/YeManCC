@@ -1028,6 +1028,23 @@ static HMONITOR focusResolveMonitor(const FocusTargetSnapshot& target);
 
 // Full-height edge layout: startup, summon, DPI and work-area changes share this policy.
 static HWND gameOverlayLayoutWindow(){return g_gameOverlaySurfaceAttached&&g_gameOverlaySurface?g_gameOverlaySurface:g_hwnd;}
+// 用户字体/界面档位（80/90/100/110/120）。
+//
+// fullHeight 模式下窗口宽度等于「可用高度 × 设计宽高比」，100% 时前端舞台
+// （app-stage）恰好等于设计宽度 580。此前把档位乘在舞台 zoom 上，结果是
+// ymccStageWidth() 返回 580/档位：字号确实变大了，但可用宽度少了 1-1/档位，
+// 顶部监控条与侧边导航被压出省略号。档位只能靠"把窗口一起加宽"来兑现——
+// 窗口宽 × 档位 → 舞台仍是 580，zoom 随宽度上限自然升高，布局一寸不让。
+// 0 = 尚未从设置读取；只在 fullHeight 布局里生效（普通可拖拽窗口不动尺寸）。
+static std::atomic<int> g_uiScalePercent{0};
+static int readUiScalePercentFromSettings();   // 定义在启动期设置读取区之后
+static int uiScalePercentForLayout() {
+    const int cached = g_uiScalePercent.load(std::memory_order_acquire);
+    if (cached != 0) return cached;
+    const int percent = readUiScalePercentFromSettings();
+    g_uiScalePercent.store(percent, std::memory_order_release);
+    return percent;
+}
 static bool applyFullHeightLayout(HMONITOR preferredMonitor = nullptr, bool dockLeft = windowPlacementIsLeft()) {
     const HWND layoutWindow=gameOverlayLayoutWindow();
     if (!layoutWindow) return false;
@@ -1042,6 +1059,11 @@ static bool applyFullHeightLayout(HMONITOR preferredMonitor = nullptr, bool dock
     double R = (double)g_baseW / (double)g_baseH; // 设计基准宽高比
     int targetH = waH;                            // 横屏默认上下贴合全屏
     int targetW = (int)round((double)targetH * R);
+    // 用户档位只加宽窗口，不放宽设计宽度（见 g_uiScalePercent 说明）。必须放在
+    // 下面的宽度保护之前，这样"比屏幕还宽"仍然按真实可用宽度回退并垂直居中。
+    const int uiScalePercent = uiScalePercentForLayout();
+    if (uiScalePercent > 100)
+        targetW = (int)round((double)targetW * ((double)uiScalePercent / 100.0));
     bool widthLimited = false;
     if (targetW > waW) {                          // 极窄屏保护：以宽度为准
         widthLimited = true;
@@ -21966,7 +21988,6 @@ static std::vector<std::string> ymccDeviceClassLedEffects(const std::string& dev
         deviceClass == "HandheldCompanion.Devices.AYANEOAIRLite" ||
         deviceClass == "HandheldCompanion.Devices.AYANEOAIRPlusAMD" ||
         deviceClass == "HandheldCompanion.Devices.AYANEOAIRPlusAMDMendocino" ||
-        deviceClass == "HandheldCompanion.Devices.AYANEOAIRPlusIntel" ||
         deviceClass == "HandheldCompanion.Devices.AYANEOAIRPro" ||
         deviceClass == "HandheldCompanion.Devices.AYANEOFlip1SKB" ||
         deviceClass == "HandheldCompanion.Devices.AYANEOFlipKB" ||
@@ -21981,6 +22002,9 @@ static std::vector<std::string> ymccDeviceClassLedEffects(const std::string& dev
         deviceClass == "HandheldCompanion.Devices.AYANEO3" ||
         deviceClass == "HandheldCompanion.Devices.AYANEONEXT2")
         return {"solid"};
+    if (deviceClass == "HandheldCompanion.Devices.AYANEOAIRPlusIntel" ||
+        deviceClass == "HandheldCompanion.Devices.OneXPlayerX2MiniPro")
+        return {"solid", "breathing"};
     if (deviceClass == "HandheldCompanion.Devices.ClawA1M" ||
         deviceClass == "HandheldCompanion.Devices.ClawA2VM" ||
         deviceClass == "HandheldCompanion.Devices.ClawBZ2EM" ||
@@ -22007,8 +22031,6 @@ static std::vector<std::string> ymccDeviceClassLedEffects(const std::string& dev
         return {"solid", "breathing", "rainbow", "wheel", "ambilight"};
     if (deviceClass == "HandheldCompanion.Devices.OneXPlayer3")
         return {"solid", "breathing", "preset"};
-    if (deviceClass == "HandheldCompanion.Devices.OneXPlayerX2MiniPro")
-        return {"solid", "breathing"};
     return {};
 }
 
@@ -71986,11 +72008,29 @@ static bool startupReadJsonFile(const std::wstring& path, json& document, bool& 
     } catch (...) { return false; }
 }
 
+// 启动期读一次用户字体/界面档位（yeman-settings.json 的 ui.uiScalePercent）。
+// 只认 70..150 的整十档位；文件缺失、损坏或越界一律回到 100%，绝不改变默认布局。
+static bool uiScalePercentAllowed(int value) {
+    return value >= 70 && value <= 150 && value % 10 == 0;
+}
+static int readUiScalePercentFromSettings() {
+    try {
+        json document;
+        bool missing = false;
+        if (!startupReadJsonFile(YM_SETTINGS_FILE, document, missing) || !document.is_object()) return 100;
+        const auto ui = document.find("ui");
+        if (ui == document.end() || !ui->is_object()) return 100;
+        const auto percent = ui->find("uiScalePercent");
+        if (percent == ui->end() || !percent->is_number_integer()) return 100;
+        const int value = percent->get<int>();
+        return uiScalePercentAllowed(value) ? value : 100;
+    } catch (...) { return 100; }
+}
+
 static std::mutex& webViewRecoveryConfigMutex() {
     static std::mutex mutex;
     return mutex;
 }
-
 static bool webViewGpuStateValid(const json& state) {
     if (!state.is_object()) return false;
     if (state.contains("schemaVersion") && (!state["schemaVersion"].is_number_integer() || state["schemaVersion"] < 0 || state["schemaVersion"] > 1)) return false;
@@ -75332,6 +75372,15 @@ static void reg_window() {
         int fh = (wr.bottom - wr.top) - cr.bottom + h;
         if(!SetWindowPos(layoutWindow, nullptr, 0, 0, fw, fh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))return false;
         return true;
+    });
+    ipc_on("window.uiScalePercent", [](const json& a) -> json {
+        // 字体/界面档位：只影响 fullHeight 吸附窗的宽度（见 g_uiScalePercent）。
+        // 立即重排一次，避免等下一次唤醒/DPI 变化才生效。非 fullHeight 窗口
+        // 不改变任何尺寸，档位只留给前端自己处理。
+        const int percent = a.value("percent", 100);
+        g_uiScalePercent.store(uiScalePercentAllowed(percent) ? percent : 100, std::memory_order_release);
+        if (!g_fullHeight || !g_hwnd || !IsWindow(g_hwnd)) return true;
+        return applyFullHeightLayout(focusCurrentTargetMonitor(), windowPlacementIsLeft());
     });
     ipc_on("window.position", [](const json&) -> json {
         RECT r; GetWindowRect(g_hwnd, &r);
@@ -89078,6 +89127,86 @@ static json ymccLightSetterApply(bool enabled, const std::string& mode,
                 {"timedOut", timedOut}};
 }
 
+// ---------------------------------------------------------------------------
+// AYANEO CEii（AIR Plus 家族）常驻呼吸子进程。
+//
+// 为什么需要常驻：这台机的 MCU 没有可用的循环呼吸波形。实机取证显示写入
+// pattern=0xE7 后 MCU 只做一次性淡出（左亮右暗→变黑），每次提交都会重启，
+// 扫描 watchdog 0x00/0x05/0x07/0x0F 无差异。厂商 AYASpace 3.2.0.4 也是同样
+// 做法：EcRgb.cpp 里所有动效都是宿主逐帧调 set_color_all，set_effect 的
+// pattern 恒为 0xE7。所以呼吸只能由宿主按帧推颜色，就需要一个活到"换效果"
+// 为止的进程。
+//
+// 刻意不复用 ymccLightSetterApply：那个函数承载 owner lease / return-debt /
+// admission 接受门语义，并且会阻塞等待子进程返回（最长 30s）。呼吸要一直跑，
+// 走那条路会把 apply 调用卡住，也会污染它精心维护的不变量。
+// 这里只做"拉起/杀掉"两件事，成败以进程是否活着为准，不声明任何写入回执。
+// 子进程自己带 --aya-parent-pid，面板崩溃时不至于留下孤儿。
+static HANDLE g_ayaBreathProcess = nullptr;
+
+static void ymccAyaBreathingStop() {
+    if (!g_ayaBreathProcess) return;
+    (void)TerminateProcess(g_ayaBreathProcess, 0);
+    (void)WaitForSingleObject(g_ayaBreathProcess, 2000);
+    CloseHandle(g_ayaBreathProcess);
+    g_ayaBreathProcess = nullptr;
+}
+
+static bool ymccAyaBreathingActive() { return g_ayaBreathProcess != nullptr; }
+
+// 面板的 speed 是"速度百分比"（越大越快），呼吸周期与之反向：0..100 → 8800..1000ms。
+// 线性映射让面板 55%（默认档）落在 4510ms，正好对上实机调参确定的 4500ms 周期，
+// 也就是"什么都不动时手感不变，动了滑杆才真的变快/变慢"。
+static int ymccAyaBreathingPeriodMs(int speed) {
+    const int clamped = std::clamp(speed, 0, 100);
+    return 8800 - clamped * (8800 - 1000) / 100;
+}
+
+static json ymccAyaBreathingApply(BYTE r1, BYTE g1, BYTE b1,
+                                  BYTE r2, BYTE g2, BYTE b2, int speed, int brightness) {
+    ymccAyaBreathingStop();
+    if (GetFileAttributesW(kLightSetterExe.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return json{{"ok", false}, {"reason", "light-setter-missing"}};
+    const std::wstring hcDll = kLightSetterHcRuntimeRoot + L"\\HandheldCompanion.dll";
+    if (GetFileAttributesW(hcDll.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return json{{"ok", false}, {"reason", "hc-runtime-missing"}};
+    std::wostringstream cmd;
+    cmd << L'"' << kLightSetterExe << L'"'
+        << L" --action aya-light-breathe"
+        << L" --hc-assembly \"" << hcDll << L'"'
+        << L" --hc-runtime-root \"" << kLightSetterHcRuntimeRoot << L'"'
+        << L" --hc-profile ymcc-device-core-v1"
+        << L" --expected-device-class \"" << U2W(g_machineIdentity.deviceClass) << L'"'
+        << L" --aya-breathe-ms 0"
+        // 速度滑杆真正生效的唯一途径：子进程按这个周期跑余弦明暗循环。
+        // 不传就是 Program.cs 里的静态 4500ms，滑杆等于白调。
+        << L" --aya-breathe-period-ms " << ymccAyaBreathingPeriodMs(speed)
+        << L" --aya-parent-pid " << static_cast<unsigned long long>(GetCurrentProcessId())
+        << L" --r " << static_cast<int>(r1)
+        << L" --g " << static_cast<int>(g1)
+        << L" --b " << static_cast<int>(b1)
+        << L" --r2 " << static_cast<int>(r2)
+        << L" --g2 " << static_cast<int>(g2)
+        << L" --b2 " << static_cast<int>(b2)
+        << L" --brightness " << brightness;
+    std::wstring cmdLine = cmd.str();
+    STARTUPINFOW si{sizeof(si)};
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    // 不继承任何句柄：常驻子进程若持有父进程的管道，会让父进程的读取端永远等不到 EOF。
+    if (!ymcc::processEfficiency::createProcess(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        return json{{"ok", false}, {"reason", "aya-breathe-spawn-failed"},
+                    {"error", static_cast<unsigned long long>(GetLastError())}};
+    CloseHandle(pi.hThread);
+    g_ayaBreathProcess = pi.hProcess;
+    return json{{"ok", true}, {"reason", "ok"}, {"backend", "aya-ceii-breath"},
+                {"breathing", true}, {"pid", static_cast<unsigned long long>(pi.dwProcessId)},
+                {"breathePeriodMs", ymccAyaBreathingPeriodMs(speed)},
+                {"physicalEffectVerified", false}};
+}
+
 static bool rogAuraApplyColor(RogAuraMode mode, BYTE r1, BYTE g1, BYTE b1,
                                BYTE r2, BYTE g2, BYTE b2, int percent) {
     // HC ApplyColor(): color report, then MESSAGE_APPLY (0x5d b4), MESSAGE_SET (0x5d b5 0 0 0).
@@ -90551,6 +90680,21 @@ static void reg_gamepad_feedback() {
             if (g_machineIdentity.family != YmccFamily::MsiClaw)
                 return receipt(json{{"ok", false}, {"reason", "lighting-identity-mismatch"}});
             return receipt(msiClawApplyLed(enabled, mode, r1, g1, b1, r2, g2, b2, brightness));
+        }
+        // AYANEO CEii 的呼吸必须常驻进程逐帧推颜色（MCU 没有循环呼吸波形）。
+        // 换效果/关灯/关机时必须先停掉旧进程，再走下面的常规一次性下发。
+        {
+            const auto* breathOwnership = ymcc::lighting::oemOwnershipFor(g_machineIdentity.deviceClass);
+            const bool ceiiRam = breathOwnership &&
+                breathOwnership->protocol == ymcc::lighting::OemOwnershipProtocol::CeiiRam;
+            if (ceiiRam && lightingRoute->provider == ymcc::lighting::NativeProvider::Helper) {
+                if (enabled && mode == "breathing")
+                    return receipt(ymccAyaBreathingApply(r1, g1, b1, r2, g2, b2, speed, brightness));
+                ymccAyaBreathingStop();
+            } else if (ymccAyaBreathingActive()) {
+                // 机型换了（热插拔/身份变化）也要收拾干净。
+                ymccAyaBreathingStop();
+            }
         }
         if (lightingRoute->provider != ymcc::lighting::NativeProvider::RogAura)
             return receipt(ymccLightSetterApply(enabled, mode, r1, g1, b1, r2, g2, b2, speed, brightness, presetId));
@@ -100411,6 +100555,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         // 退出前恢复被冻结的进程；统一清理函数保证 app.exit/会话结束/窗口销毁只执行一次。
         stopTdpDaemonForExit();
         stopTopMonitorForExit(1000);
+        // 常驻呼吸子进程必须在退出时收掉，否则面板关了灯还在跑。
+        ymccAyaBreathingStop();
         (void)sgCleanupBeforeExit(true);
         closeWebViewsForExit();
         // Cleanup watchers
@@ -108125,6 +108271,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int ns) {
     }
             stopTdpDaemonForExit();
             stopTopMonitorForExit(1000);
+            // 兜底：即使走 WM_QUIT 直接离开消息循环，也不留下呼吸子进程。
+            ymccAyaBreathingStop();
             (void)sgCleanupBeforeExit(true);
     closeWebViewsForExit();
     if (hMutex) CloseHandle(hMutex);

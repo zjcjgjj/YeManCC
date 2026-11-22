@@ -110,6 +110,7 @@ async function onUpdatePredownloadChange(enabled:boolean){try{await setUpdatePre
 const backgroundFileLabel=ref('未选择背景文件'),backgroundPreviewUrl=ref('');
 
 const theme = ref<ThemeName>(getTheme());
+const uiScalePercent = ref<number>(getUiSetting('uiScalePercent'));
 const bgEnabled = ref(false);
 const bgBusy = ref(false);
 const bgKind = ref<'image' | 'video'>('image');
@@ -285,6 +286,18 @@ function onThemeChange(value: string | number): void {
   const next = value as ThemeName;
   theme.value = next;
   setTheme(next);
+}
+async function onUiScalePercentChange(value: string | number): Promise<void> {
+  const next = Number(value);
+  if (![80, 90, 100, 110, 120, 130].includes(next)) return;
+  errMsg.value = '';
+  try {
+    await setUiSettings({ uiScalePercent: next });
+    uiScalePercent.value = getUiSetting('uiScalePercent');
+  } catch (error) {
+    uiScalePercent.value = getUiSetting('uiScalePercent');
+    errMsg.value = '字体大小保存失败：' + (error instanceof Error ? error.message : String(error));
+  }
 }
 async function onWindowPlacementChange(value: string | number): Promise<void> {
   if (value !== 'left' && value !== 'right') return;
@@ -862,6 +875,7 @@ async function openGithub() {
 function syncAppearanceSettings(): void {
   floatingSummonEnabled.value = getUiSetting('floatingSummonEnabled');
   fxSoundAutoRepair.value = getUiSetting('fxSoundAutoRepair');
+  uiScalePercent.value = getUiSetting('uiScalePercent');
   theme.value=getTheme();windowPlacement.value=getUiSetting('windowPlacement');
   bgOpacity.value=Math.round(getBackgroundOpacity()*100);bgBlur.value=getBackgroundBlur();
   if (!bgPositionEditing) bgPosition.value=getBackgroundPosition();
@@ -877,6 +891,7 @@ onMounted(async () => {
   await loadUiSettings();
   floatingSummonEnabled.value = getUiSetting('floatingSummonEnabled');
   fxSoundAutoRepair.value = getUiSetting('fxSoundAutoRepair');
+  uiScalePercent.value = getUiSetting('uiScalePercent');
   videoBatteryPause.value = getUiSetting('videoBatteryPause');
   windowPlacement.value = getUiSetting('windowPlacement');
   bgOpacity.value = Math.round(getBackgroundOpacity() * 100);
@@ -923,6 +938,23 @@ onBeforeUnmount(() => {
         color="accent"
         full
         @update:model-value="onThemeChange"
+      />
+    </section></div>
+ <div class="setting-color setting-scale"><section class="card interface-scale-settings">
+      <h3 class="card-title"><InlineIcon name="gauge" /> 字体大小 <span class="scale-current-value">当前 {{ uiScalePercent }}%</span></h3>
+      <SegButton
+        :model-value="uiScalePercent"
+        :options="[
+          { value: 80, label: '80%' },
+          { value: 90, label: '90%' },
+          { value: 100, label: '100%' },
+          { value: 110, label: '110%' },
+          { value: 120, label: '120%' },
+          { value: 130, label: '130%' },
+        ]"
+        color="accent"
+        :columns="6"
+        @update:model-value="onUiScalePercentChange"
       />
     </section></div>
  <div class="setting-wallpaper"><section class="card background-settings-card" aria-label="动态壁纸">
@@ -1689,7 +1721,10 @@ onBeforeUnmount(() => {
   }
 }
 
-.modern-settings-page{min-width:0}.modern-settings-page :deep(.settings-section-panel){display:grid;gap:12px}.modern-settings-page :deep(.settings-section-heading){margin-bottom:0}.modern-settings-page :deep(.settings-section-panel>.card){padding:12px;background:var(--console-surface-alt);box-shadow:none}.modern-settings-page :deep(.settings-section-heading>span){display:none}
+.modern-settings-page{min-width:0}.modern-settings-page :deep(.settings-section-panel){display:grid;gap:12px}
+/* 任何一张卡片都不允许超出设置页单列宽度：小屏 + 大字号时靠这一条兜底，
+   避免内部控件（网格/分段按钮）把卡片顶宽、进而带出整页横向滚动。 */
+.modern-settings-page :deep(.settings-section-panel)>*{min-width:0}.modern-settings-page :deep(.settings-section-heading){margin-bottom:0}.modern-settings-page :deep(.settings-section-panel>.card){padding:12px;background:var(--console-surface-alt);box-shadow:none}.modern-settings-page :deep(.settings-section-heading>span){display:none}
 .window-placement-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.window-placement-options>button{min-height:40px;padding:7px;border:1px solid var(--console-line);border-radius:8px;background:var(--console-surface-alt);color:var(--text);font:inherit;font-size:14px;font-weight:650;cursor:pointer}.window-placement-options>button.active{background:var(--accent-surface);border-color:var(--accent-border);color:var(--accent)}
 .background-choice-summary{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--console-line);border-radius:10px;background:var(--console-faint);min-width:0}.background-thumbnail{display:grid;place-items:center;width:62px;height:49px;flex:0 0 auto;border:1px solid var(--accent-border);border-radius:8px;background:var(--accent-surface);color:var(--accent);overflow:hidden}.background-thumbnail img{width:100%;height:100%;object-fit:cover}.background-choice-summary>div:nth-child(2){display:flex;flex:1;min-width:0;flex-direction:column;gap:5px}.background-choice-summary strong{font-size:14px;font-weight:650}.background-choice-summary>div:nth-child(2)>span{font-size:12px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.background-active-state{font-size:12px;white-space:nowrap;color:var(--text-dim)}.background-active-state.active{color:var(--accent)}.modern-settings-page .background-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 12px}.modern-settings-page .background-actions button{min-height:36px;font-size:14px}.background-tuning{display:grid;gap:12px;padding:12px 0;border-top:1px solid var(--console-line);border-bottom:1px solid var(--console-line)}.settings-option-list{display:grid;margin-top:8px}.settings-option-list :deep(.toggle-row){min-height:42px;padding:6px 0}.settings-option-list :deep(.toggle-row+.toggle-row){border-top:1px solid var(--console-line)}.background-feedback{font-size:12px;color:var(--text-dim);line-height:1.5;margin:6px 0 0}
 .modern-settings-page .fan-log-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.modern-settings-page .fan-log-action{min-width:0;min-height:40px;padding:6px 5px;font-size:13px;white-space:nowrap}.modern-settings-page .support-settings-card .action-btn{margin:0;min-height:38px;font-size:14px;text-align:left;padding-left:12px}.modern-settings-page .support-settings-card{display:grid;gap:8px}.modern-settings-page .support-settings-card .card-title{margin:0}
@@ -1734,6 +1769,13 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .settings-density-preview .window-placement-options{grid-template-columns:repeat(2,minmax(0,1fr))}
+/* [YMCC-AIRPLUS-FIX] current font-scale badge: keep compact but readable on 6" screens */
+.interface-scale-settings .scale-current-value{font-size:12px;font-weight:600;opacity:.72;margin-left:6px;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* 字体卡片：标题行 + 档位网格两段式布局，标题里的"当前 XX%"靠右并允许换行，
+   档位用等宽网格（SegButton columns），6 档正好两行，任何宽度下都不会溢出。 */
+.interface-scale-settings{display:grid;gap:10px;min-width:0}
+.interface-scale-settings .card-title{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;min-width:0;margin:0}
+.interface-scale-settings .scale-current-value{margin-left:auto}
 </style>
 
 <style>
@@ -1825,7 +1867,7 @@ onBeforeUnmount(() => {
 
 .modern-settings-page.settings-density-preview .settings-layout-b .settings-section-panel { padding:0; background:transparent; border:0; }
 
-.modern-settings-page.settings-density-preview .settings-layout-b .appearance-flow { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.modern-settings-page.settings-density-preview .settings-layout-b .appearance-flow { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; align-items:stretch; }
 
 .modern-settings-page.settings-density-preview .settings-layout-b .appearance-flow>div,
 .modern-settings-page.settings-density-preview .settings-layout-b .device-flow>.card,
@@ -1836,8 +1878,11 @@ onBeforeUnmount(() => {
 
 .modern-settings-page.settings-density-preview .settings-layout-b .setting-wallpaper { grid-column:1/-1; }
 
-.modern-settings-page.settings-density-preview .settings-layout-b .setting-position>.card,
-.modern-settings-page.settings-density-preview .settings-layout-b .setting-color>.card { height:100%; display:flex; flex-direction:column; justify-content:space-between; }
+/* 字体大小卡片独占一整行：6 档排成一行，既不会溢出也不会浪费右列空白。
+   height 必须交给内容决定，否则会重演"档位按钮跑到卡片外面"的老问题。 */
+.modern-settings-page.settings-density-preview .settings-layout-b .setting-scale { grid-column:1/-1; align-self:start; }
+
+.modern-settings-page.settings-density-preview .settings-layout-b .setting-scale>.card { height:auto; gap:10px; }
 
 .modern-settings-page.settings-density-preview .settings-layout-b .setting-position .window-placement-options,
 .modern-settings-page.settings-density-preview .settings-layout-b .setting-color .seg-group { width:100%; }
@@ -1947,8 +1992,12 @@ onBeforeUnmount(() => {
 
 
 
+/* 第一行两块等高：界面颜色只有"标题 + 三档"，比左侧的"窗口位置 + 悬浮呼出"矮一截。
+   父容器 align-items 已改 stretch，这里靠 height:100% 把高度真正传进卡片，
+   align-content:space-between 才能把标题顶到上沿、把选项压到下沿。
+   :not(.setting-scale) 排除跨整行的字体大小卡——它的高度必须由内容说话。 */
 .modern-settings-page.settings-density-preview .settings-layout-b .setting-position>.card,
-.modern-settings-page.settings-density-preview .settings-layout-b .setting-color>.card { display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:auto 36px; justify-content:stretch; align-content:space-between; gap:8px; }
+.modern-settings-page.settings-density-preview .settings-layout-b .setting-color:not(.setting-scale)>.card { display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:auto 36px; justify-content:stretch; align-content:space-between; gap:8px; height:100%; }
 
 .modern-settings-page.settings-density-preview .settings-layout-b .setting-position .card-title,
 .modern-settings-page.settings-density-preview .settings-layout-b .setting-color .card-title { margin:0!important; }
@@ -1956,4 +2005,66 @@ onBeforeUnmount(() => {
 .modern-settings-page.settings-density-preview .settings-layout .interface-color-settings .seg { min-height:36px; height:36px; flex-shrink:0; }
 
 .modern-settings-page.settings-density-preview .settings-layout .interface-color-settings .seg-btn { height:36px!important; min-height:36px!important; max-height:36px; box-sizing:border-box; flex-shrink:0; }
+
+/* ── 分区栏：四段改成一个槽 + 一块滑块 ──────────────────────────────
+   原来四个按钮各自描边，看上去像四张并列的小卡片；选中态只换了边框颜色，
+   "我现在在哪一段"要靠读边框才分辨得出来。改成胶囊槽：浅底内凹 + 选中项
+   实心填充，一眼就能定位。
+   选中文字仍用 accent 色而不是白字——黄黑主题的 accent 是亮黄，白字压上去
+   会糊成一片；靠填充 + 内描边 + 外发光拉开层级更稳，也适配三套主题。 */
+.modern-settings-page.settings-density-preview .settings-layout .settings-section-tabs {
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--console-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--console-surface-alt) 82%, transparent);
+}
+
+.modern-settings-page.settings-density-preview .settings-layout .settings-section-tabs button {
+  height: 34px;
+  min-height: 34px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 600;
+  transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+}
+
+.modern-settings-page.settings-density-preview .settings-layout .settings-section-tabs button:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+}
+
+.modern-settings-page.settings-density-preview .settings-layout .settings-section-tabs button[aria-pressed="true"] {
+  background: var(--accent-surface);
+  color: var(--accent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent),
+    0 2px 9px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* 卡标题图标统一成 accent 淡色：原来图标继承正文色，标题和图标糊成一团。 */
+.modern-settings-page.settings-density-preview .settings-layout-b .appearance-flow .card-title > .inline-icon,
+.modern-settings-page.settings-density-preview .settings-layout-b .device-flow .card-title > .inline-icon,
+.modern-settings-page.settings-density-preview .settings-layout-b .updates-flow .card-title > .inline-icon {
+  color: var(--accent);
+  opacity: .88;
+}
+
+/* "当前 100%"从小灰字改成胶囊徽标：这是全页唯一需要随时看到的当前值。 */
+.modern-settings-page .interface-scale-settings .scale-current-value {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent);
+  opacity: 1;
+}
 </style>

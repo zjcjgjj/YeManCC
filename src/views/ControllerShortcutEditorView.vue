@@ -24,6 +24,7 @@ import { windowApi } from '@/bridge/api';
 import { oemKeysGet, setShortcutRecording, getShortcutRecordingState, summonGet, summonSet, type GamepadSettings } from '@/bridge/yeman';
 import { compareAndSwapInputSettings, loadSettings, type InputSettingsSnapshot } from '@/bridge/settingsRepository';
 import { focusGamepadElement } from '@/gamepad/focus';
+import { hasBackLayer } from '@/gamepad/backLayers';
 import { formatControllerShortcutDisplayInputs } from '@/bridge/controllerOemPresentation';
 import {
   CONTROLLER_BUTTONS,
@@ -133,7 +134,7 @@ const widthSession = ref(false);
 let editorDisposed = false;
 const ownsMainWindow = isNativeRuntime && !/[?&]__ymccChild=\d+/.test(window.location.hash);
 let editorWidthRequest: Promise<void> | null = null;
-function setEditorWindowWidth(): Promise<void> {
+function setEditorWindowWidth(quiet = false): Promise<void> {
   if (!ownsMainWindow || editorDisposed) return Promise.resolve();
   if (editorWidthRequest) return editorWidthRequest;
   const task = (async () => {
@@ -144,8 +145,8 @@ function setEditorWindowWidth(): Promise<void> {
         return;
       }
       widthSession.value = receipt.ok;
-      if (!receipt.ok) status.value = '当前窗口未能加宽，请检查窗口状态。';
-    } catch { if (!editorDisposed) status.value = '窗口加宽失败，仍可继续编辑。'; }
+      if (!receipt.ok && !quiet) status.value = '当前窗口未能加宽，请检查窗口状态。';
+    } catch { if (!editorDisposed && !quiet) status.value = '窗口加宽失败，仍可继续编辑。'; }
   })();
   editorWidthRequest = task;
   void task.finally(() => { if (editorWidthRequest === task) editorWidthRequest = null; });
@@ -156,6 +157,23 @@ async function releaseEditorWindowWidth(): Promise<void> {
   if (!widthSession.value) return;
   widthSession.value = false;
   await windowApi.controllerEditorWidth(widthOwner, false).catch(() => undefined);
+}
+// 窗口被隐藏/最小化再呼出时，native 会重新走一遍布局。加宽会话可能在这一步被
+// 归还（旧版本）或被重排（新版本），两种情况下都只需再把当前会话要回来一次：
+// 会话仍在本 owner 手上时 native 只会重算几何，不会覆盖普通窗口尺寸。
+const WIDTH_REASSERT_EVENTS = ['ipc:window.shown', 'ipc:window.restored', 'ipc:window.summoned'];
+let widthReassertTimer: number | null = null;
+function scheduleWidthReassert(): void {
+  if (!ownsMainWindow || editorDisposed) return;
+  if (widthReassertTimer !== null) window.clearTimeout(widthReassertTimer);
+  // 让 native 先完成自己的 reflow，再补一次会话，避免两边抢同一次 SetWindowPos。
+  widthReassertTimer = window.setTimeout(() => {
+    widthReassertTimer = null;
+    if (!editorDisposed) void setEditorWindowWidth(true);
+  }, 140);
+}
+function onEditorDocumentVisibility(): void {
+  if (document.visibilityState === 'visible') scheduleWidthReassert();
 }
 defineExpose({ releaseEditorWindowWidth });
 const allActionOptions = CONTROLLER_SHORTCUT_ACTIONS.filter((action) => action.available).map((action) => ({ value: action.id, label: `${action.category} · ${action.label}` }));
@@ -193,7 +211,7 @@ const activeAction = computed(() => {
 const keyGridParameter = computed(() => activeAction.value?.parameters?.find((parameter) => parameter.presentation === 'key-grid'));
 const validation = computed(() => validateControllerShortcutRules(rulesToValidate(rules.value), oemKeys.value));
 const inputIssue = computed(()=>creationProblem.value || validation.value[0] || '');
-const notice = computed(()=>/失败|异常|已保存|已取消全部|无法|未能|已加入|草稿已保留/.test(status.value)?status.value:'');
+const notice = computed(()=>/失败|异常|已保存|已取消全部|无法|未能|已加入|已选择|已丢弃|草稿已保留/.test(status.value)?status.value:'');
 
 // ── 掌机专用键（背部/专用）输入：机型库清单由 native oem.keys.get 提供 ──
 const oemKeys = ref<OemKeysSnapshot>(OEM_EMPTY_SNAPSHOT);
@@ -440,6 +458,7 @@ function chooseOutputCombo(keys: KeyboardOutputKey[]): void {
   const first = keys[keys.length-1];
   chooseAction(first.actionId);
   updateRule({params:{...activeRule.value!.params,key:first.code,keySequence:JSON.stringify(existing)}});
+  announceOutputChoice();
 }
 function chooseOutputKey(actionId: string, code: string): void {
   if (activeRule.value?.params.keySequence) { chooseOutputCombo([{actionId,code}]); return; }
@@ -452,6 +471,21 @@ function chooseOutputKey(actionId: string, code: string): void {
     chooseAction(actionId);
     updateParameter('key', code);
   }
+  announceOutputChoice();
+}
+// 选完键只改了内存里的规则，还没落盘。以前这里没有任何收尾提示，用户会以为
+// 「选完就保存好了」。新建流程会推进到「核对并完成」，所以只对已有动作提示。
+function announceOutputChoice(): void {
+  if (creating.value) return;
+  const rule = activeRule.value;
+  if (!rule || !hasUnsavedChanges.value) return;
+  // 不覆盖更重要的失败/不可用提示（例如 SteamDeck 预设不可选）。
+  if (/不可选择|失败|异常|无法/.test(status.value)) return;
+  status.value = `已选择 ${outputLabel(rule)}，点「应用」保存。`;
+}
+// 键盘弹窗被取消时若丢了未确认的组合键，用它给出解释（不静默丢失）。
+function onOutputNotice(text: string): void {
+  if (text) status.value = text;
 }
 function updateNumber(key: 'holdMs' | 'doubleWindowMs' | 'intervalMs', event: Event): void {
   const value = Number((event.target as HTMLInputElement).value);
@@ -496,7 +530,18 @@ function finishNewAction(): void {
   const draft=newDraft.value;rules.value=[...rules.value,draft];newDraft.value=null;
   selectRule(draft.id);touch();status.value='新动作已加入列表，点击顶部“应用保存”保存。';
 }
-function returnToInputStep(): void {if(creating.value&&!recording.value)newStep.value='input'}
+function returnToInputStep(): void {
+  if (!creating.value || recording.value) return;
+  // 只改 newStep 是不够的：picker 打开时 outputPickerOpen 仍为 true，而输入区
+  // 的 v-show 条件是「非浮层变体必须 picker 关闭」。结果"重新录制输入"看起来
+  // 毫无反应（编号变 1/4，但录制区还是藏着的）。这里把选择器一起收掉。
+  outputPickerOpen.value = false;
+  newStep.value = 'input';
+  // 按钮语义就是重录，切回第一步后直接进录制态，省掉再点一次"开始录制"。
+  if (inputMethod.value === 'record' && !recordingBusy.value && !busy.value) {
+    void nextTick(() => { if (creating.value && newStep.value === 'input') void startRecording(); });
+  }
+}
 function continueToOutputStep(): void {
   if (!creating.value || newStep.value !== 'trigger' || busy.value || recording.value) return;
   newStep.value = 'output';
@@ -941,8 +986,13 @@ function onGamepadBack(event: Event): void {
   if (!root || !root.getClientRects().length) return;
   // A Dropdown listener may already have consumed B in the same dispatch.
   // Respect that decision and keep the editor mounted.
-  if (event.defaultPrevented || root.querySelector('.output-picker, [data-gp-modal="keyboard-output"]')) return;
+  if (event.defaultPrevented) return;
   if (closeConfirm.value) { event.preventDefault(); resumeEditing(); return; }
+  // 输出动作面板 / 键盘输出仍然开着时，B 只退它们这一层，不能连编辑器一起关。
+  // 这里必须问 backLayers 栈：键盘弹窗 Teleport 到 body，不在 root 内，旧的
+  // querySelector 判断查不到它，于是按 B 从键盘弹窗一路退回了最初的界面。
+  if (hasBackLayer()) { event.preventDefault(); return; }
+  if (root.querySelector('.output-picker, [data-gp-modal="keyboard-output"]')) return;
   const openTrigger = Array.from(root.querySelectorAll<HTMLElement>(
     '[aria-expanded="true"][aria-haspopup="listbox"]',
   )).find((el) => root.contains(el));
@@ -971,6 +1021,8 @@ onMounted(() => {
   window.addEventListener('blur', onWindowBlur);
   stopGamepadRecording = onIpc('shortcut.recording.gamepad', onNativeGamepadRecording);
   stopGamepadRecordingState = onIpc('shortcut.recording.stopped', onNativeRecordingStopped);
+  for (const name of WIDTH_REASSERT_EVENTS) window.addEventListener(name, scheduleWidthReassert);
+  document.addEventListener('visibilitychange', onEditorDocumentVisibility);
   nextTick(() => dialogEl.value?.focus({ preventScroll: true }));
 });
 onActivated(() => { holdCoveredBackground(); if (!firstLoadPending && !props.initialActionId && !dirty.value && !recording.value) void load().catch(() => undefined); });
@@ -990,6 +1042,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', onWindowBlur);
   stopGamepadRecording?.();
   stopGamepadRecordingState?.();
+  for (const name of WIDTH_REASSERT_EVENTS) window.removeEventListener(name, scheduleWidthReassert);
+  document.removeEventListener('visibilitychange', onEditorDocumentVisibility);
+  if (widthReassertTimer !== null) { window.clearTimeout(widthReassertTimer); widthReassertTimer = null; }
   clearDesktopRecording();
   void stopNativeRecording();
 });
@@ -1055,11 +1110,11 @@ onBeforeUnmount(() => {
               <div v-show="(!creating || newStep==='input') && (!outputPickerOpen || outputActionVariant === 'library')" class="editor-bubble recorder-bubble"><ControllerComboInput :method="inputMethod" :variant="inputFlowVariant" :mode="recordMode" :persona="diagramPersona" :inputs="activeRule.inputs" :captured="recordingInputs" :candidate="pendingCombination" :catalog="oemKeys" :recording="recording" :busy="busy" :recording-busy="recordingBusy" :status="recordingStatus" @mode="onRecordingMode" @method="changeInputMethod" @oem-key="bindOemKey" @confirm-oem="confirmOemCombination" @cancel-oem="pendingCombination=null" @record="startRecording" @cancel-recording="cancelRecording" @clear="clearCombination" @oem="bindOemKey" @toggle-button="toggleManualButton" @accept="acceptCombination" @discard-candidate="pendingCombination = null" /></div>
 
               <div v-show="(!creating || newStep==='trigger') && (!outputPickerOpen || outputActionVariant === 'library')" class="editor-bubble action-trigger-bubble"><div class="action-trigger-grid"><div><span class="field-label">怎么触发</span><SegButton :model-value="activeRule.trigger" :options="oemTriggerOptions" full :disabled="busy || recording" @update:model-value="updateRule({ trigger: $event as ControllerShortcutRule['trigger'] })" /><p v-if="activeOemClickOnly" class="field-hint">当前专用键为一次性点击事件，仅支持按下/双击。</p><div class="timing-row"><label v-if="activeRule.trigger === 'hold' || activeRule.trigger === 'repeat'"><span>长按阈值</span><Dropdown :teleport-to="teleportTo" :model-value="activeRule.holdMs" :options="activeRule.trigger === 'repeat' ? repeatHoldTimeOptions : holdTimeOptions" color="accent" :disabled="busy || recording" @update:model-value="updateTiming('holdMs', $event)" /></label><label v-if="activeRule.trigger === 'double'"><span>双击窗口</span><Dropdown :teleport-to="teleportTo" :model-value="activeRule.doubleWindowMs" :options="doubleTimeOptions" color="accent" :disabled="busy || recording" @update:model-value="updateTiming('doubleWindowMs', $event)" /></label><label v-if="activeRule.trigger === 'repeat'"><span>连发间隔</span><Dropdown :teleport-to="teleportTo" :model-value="activeRule.intervalMs" :options="repeatIntervalOptions" color="accent" :disabled="busy || recording" @update:model-value="updateTiming('intervalMs', $event)" /></label></div></div></div></div>
-              <div v-show="!creating || newStep==='output' || newStep==='finish'" class="editor-bubble output-bubble"><ControllerOutputAction :summary-label="outputLabel(activeRule)" :variant="outputActionVariant" :unselected="creating && !newOutputChosen" :rule="activeRule" :disabled="busy || recording || recordingBusy" @action="chooseAction" @key="chooseOutputKey" @combo="chooseOutputCombo" @sequence="chooseKeyboardSequence" @open="outputPickerOpen = $event">
+              <div v-show="!creating || newStep==='output' || newStep==='finish'" class="editor-bubble output-bubble"><ControllerOutputAction :summary-label="outputLabel(activeRule)" :variant="outputActionVariant" :unselected="creating && !newOutputChosen" :collapsed="creating && newStep === 'input'" :rule="activeRule" :disabled="busy || recording || recordingBusy" @action="chooseAction" @key="chooseOutputKey" @combo="chooseOutputCombo" @sequence="chooseKeyboardSequence" @notice="onOutputNotice" @open="outputPickerOpen = $event">
               <div v-if="activeAction?.parameters?.some(p => p.presentation !== 'key-grid')" class="editor-bubble"><span class="field-label">动作参数</span><details v-if="activeAction.description" class="output-help"><summary>功能说明</summary><p class="field-hint">{{ activeAction.description }}</p></details><div class="parameter-grid" :class="{ 'keyboard-key-grid': keyGridParameter }" :style="keyGridParameter ? { '--key-grid-columns': keyGridParameter.gridColumns || 6 } : undefined"><template v-for="parameter in (activeAction?.parameters || []).filter(p => p.presentation !== 'key-grid')" :key="parameter.id"><template v-if="parameter.presentation === 'key-grid'"><button v-for="option in parameter.options || []" :key="option.value" class="keyboard-key-action" :class="{ active: String(activeRule.params[parameter.id] ?? parameter.default) === option.value }" type="button" :disabled="busy || recording" @click="updateParameter(parameter.id, option.value)">{{ option.label }}</button></template><label v-else-if="parameter.type !== 'boolean'"><span>{{ parameter.label }}</span><Dropdown :teleport-to="teleportTo" v-if="parameter.type === 'select'" :model-value="String(activeRule.params[parameter.id] ?? parameter.default)" :options="parameter.options || []" color="accent" :disabled="busy || recording" @update:model-value="updateParameter(parameter.id, $event)" /><input v-else type="number" :min="parameter.min" :max="parameter.max" :step="parameter.step || 1" :value="Number(activeRule.params[parameter.id] ?? parameter.default)" :disabled="busy || recording" @change="updateParameter(parameter.id, Number(($event.target as HTMLInputElement).value))"></label><label v-else class="parameter-toggle-field"><span>{{ parameter.label }}</span><button class="parameter-toggle-action" :class="{ active: Boolean(activeRule.params[parameter.id] ?? parameter.default) }" type="button" :disabled="busy || recording" @click="updateParameter(parameter.id, !Boolean(activeRule.params[parameter.id] ?? parameter.default))">{{ parameter.label }}{{ Boolean(activeRule.params[parameter.id] ?? parameter.default) ? '已开启' : '已关闭' }}</button></label></template></div></div>
               </ControllerOutputAction></div>
 
-              <div v-if="creating && !recording" class="creation-controls"><button v-if="newStep!=='input'" type="button" class="creation-back" :disabled="busy" @click="returnToInputStep">重新录制输入</button><button v-if="newStep==='trigger'" class="creation-next" type="button" @click="continueToOutputStep">下一步：选择动作</button><button v-if="newStep==='finish'" class="creation-finish" type="button" @click="finishNewAction">完成新建</button><button type="button" class="creation-cancel" @click="cancelNewAction">取消新建</button></div>
+              <div v-if="creating && !recording" class="creation-controls"><button v-if="newStep!=='input'" type="button" class="creation-back" :disabled="busy" @click="returnToInputStep">重新录制输入</button><button v-if="newStep==='trigger'" class="creation-next" type="button" @click="continueToOutputStep">下一步：选择动作</button><button v-if="newStep==='output' && newOutputChosen" class="creation-next" type="button" @click="newStep='finish'">下一步：核对并完成</button><button v-if="newStep==='finish'" class="creation-finish" type="button" @click="finishNewAction">完成新建</button><button type="button" class="creation-cancel" @click="cancelNewAction">取消新建</button></div>
 
             </section>
             <section v-else class="card empty-editor"><InlineIcon name="keyboard" /><h3>选择一个动作</h3><p>从左侧选择或新建动作，在这里编辑组合输入与参数。</p></section>

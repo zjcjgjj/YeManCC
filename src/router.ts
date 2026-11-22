@@ -51,6 +51,10 @@ const ControllerShortcutEditorStandaloneView = () => import('./views/ControllerS
 
 // Sidebar and controller page cycling share the active-page order.
 // Legacy CPU/TDP screens are retired; performance/float UI belongs to /schedule.
+//
+// 顺序即侧栏顺序，也是手柄 LB/RB 切页顺序（gamepad/engine.ts 的 cycle）。
+// 两者必须一致，否则视觉顺序和实际跳页对不上。
+// 快捷应用必须留在设置下方（用户要求的导航排序）。
 export const ROUTES = [
   { path: '/schedule', name: 'schedule', title: '性能调度', icon: 'gauge', component: PerformanceScheduleView },
   { path: '/fan', name: 'fan', title: '风扇控制', icon: 'fan', component: FanView, feature: 'fan' as const },

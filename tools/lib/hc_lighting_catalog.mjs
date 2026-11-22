@@ -76,6 +76,26 @@ export function buildLightingArtifacts({repo,catalog,policy,main}){
   for(const other of rows)if(other!==row&&other.nativeAliasTargets.includes(row.deviceId))
    other.nativeAliasTargets=other.nativeAliasTargets.filter(id=>id!==row.deviceId);
  }
+ // Reviewed effect overrides: 对已注册机型补正"声明效果集"的数据驱动入口。
+ // 与 reviewedConsumerOverrides 的区别：后者是 Apex 专用、要求换掉整个 consumer
+ // 并提供源码钉值；这里只改声明效果位，不换 consumer、不碰 sourceAdapter，因此
+ // provider 仍是 hc-device-core（原生 helper 路由）。
+ // 约束：只允许加宽。冻结 HC 已声明的效果不能被删掉，否则其它依赖同一 row 的
+ // 路由会跟着失效，而这次改动的理由（本仓原生写入器接管）没有削减任何能力。
+ const reviewedEffectOverrides=policy.reviewedEffectOverrides??[];
+ if(!Array.isArray(reviewedEffectOverrides))throw Error('LIGHTING_EFFECT_OVERRIDE_SHAPE');
+ for(const rule of reviewedEffectOverrides){
+  const row=rows.find(r=>r.name===rule.device);
+  if(!row)throw Error('LIGHTING_EFFECT_OVERRIDE_UNKNOWN_DEVICE: '+rule.device);
+  if(row.origin==='reviewed-consumer-override')throw Error('LIGHTING_EFFECT_OVERRIDE_CONFLICT: '+rule.device);
+  if(!Array.isArray(rule.ledEffects)||rule.ledEffects.length===0)throw Error('LIGHTING_EFFECT_OVERRIDE_EMPTY: '+rule.device);
+  const widened=rule.ledEffects.map(e=>{const n=effectNames[e];if(!n)throw Error('LIGHTING_EFFECT_OVERRIDE_UNKNOWN_EFFECT: '+e);return n;});
+  if(new Set(widened).size!==widened.length)throw Error('LIGHTING_EFFECT_OVERRIDE_DUPLICATE: '+rule.device);
+  const dropped=row.declaredEffects.filter(n=>!widened.includes(n));
+  if(dropped.length)throw Error('LIGHTING_EFFECT_OVERRIDE_WIDENS_ONLY: '+rule.device+' drops '+dropped.join(','));
+  if(typeof rule.reason!=='string'||rule.reason.trim().length<8)throw Error('LIGHTING_EFFECT_OVERRIDE_REASON: '+rule.device);
+  Object.assign(row,{declaredEffects:widened,origin:'reviewed-effect-override',effectOverrideReason:rule.reason});
+ }
  const source=fs.readFileSync(path.join(repo,'deps/handheldcompanion-runtime/source/Devices/OneXPlayer/OneXPlayerX1.cs'),'utf8'),list=source.match(/LEDPresets\s*=\s*\[([\s\S]*?)\];/);
  if(!list)throw Error('MISSING_NAMED_LED_PRESETS');
  const presets=[...list[1].matchAll(/new\s*\(\s*"([^"]+)"\s*,\s*"[^"]+"\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*\)/g)].map((m,i)=>({id:m[1],label:'预设 '+(i+1),value:Number(m[2])}));
@@ -155,7 +175,7 @@ export function buildLightingArtifacts({repo,catalog,policy,main}){
   oemOwnershipRows.push({deviceId:d.deviceId,deviceClass:d.consumerClass,protocol:owner.protocol,methodOwner:owner.runtimeType,sharedChargeIndicatorDeclared:sharedOwnershipModels.has(d.name),releaseMethodSha256:source.sourceSha256});
  }
  if(oemOwnershipRows.length===0||[...sharedOwnershipModels].some(n=>!oemOwnershipRows.some(r=>r.deviceId===by.get(n)?.deviceId)))throw Error('LIGHTING_OEM_OWNERSHIP_EMPTY_OR_UNBOUND');
- const metadata={schemaVersion:1,registeredClasses:rows.length,rows,presets,frozenRegisteredClasses:rows.length,reviewedExtensionRows:extensionRows.length,allRegisteredClasses:allRows.length,extensionRows,extensionModels:extensionRows.map(r=>({name:r.name,deviceId:r.deviceId,deviceClass:r.deviceClass,sourceFile:r.sourceFile,sourceSha256:r.sourceSha256,sourcePin:r.sourcePin,sourceAdapter:r.sourceAdapter,sourceDependencies:r.sourceDependencies,...(r.consumerSources?{consumerSources:r.consumerSources}:{}),presetIds:r.presetIds,requestLimits:r.requestLimits})),independentCore:policy.independentCore,nativeBaseAliases:policy.nativeBaseAliases,disabledActions:policy.disabledActions,secondColorExclusions,consumerFixedSpeed,reviewedConsumerOverrides,oemOwnership:oemOwnershipRows,brightnessCompatibility:policy.brightnessCompatibility??[],nativeAdapters:policy.nativeAdapters??[]};
+ const metadata={schemaVersion:1,registeredClasses:rows.length,rows,presets,frozenRegisteredClasses:rows.length,reviewedExtensionRows:extensionRows.length,allRegisteredClasses:allRows.length,extensionRows,extensionModels:extensionRows.map(r=>({name:r.name,deviceId:r.deviceId,deviceClass:r.deviceClass,sourceFile:r.sourceFile,sourceSha256:r.sourceSha256,sourcePin:r.sourcePin,sourceAdapter:r.sourceAdapter,sourceDependencies:r.sourceDependencies,...(r.consumerSources?{consumerSources:r.consumerSources}:{}),presetIds:r.presetIds,requestLimits:r.requestLimits})),independentCore:policy.independentCore,nativeBaseAliases:policy.nativeBaseAliases,disabledActions:policy.disabledActions,secondColorExclusions,consumerFixedSpeed,reviewedConsumerOverrides,reviewedEffectOverrides,oemOwnership:oemOwnershipRows,brightnessCompatibility:policy.brightnessCompatibility??[],nativeAdapters:policy.nativeAdapters??[]};
  metadata.catalogSha256=createHash('sha256').update(JSON.stringify({sourceBaseline:catalog.sourceBaseline,runtimeAliasSource:catalog.runtimeAliasSource,metadata})).digest('hex');
  const extensionClasses=extensionRows.map(r=>q(r.deviceClass)).join(', ');
  const nativeIdentity=['inline constexpr const char* kExtensionLightingClasses[] = {'+extensionClasses+'};','inline bool identityMatches(std::string_view actual, std::string_view expected) noexcept {','    for (const char* cls : kExtensionLightingClasses) if (actual == cls && expected == cls) return true;','    const auto* a=ymcc::capabilities::find(actual); const auto* e=ymcc::capabilities::find(expected);','    if (!a || !e) return false;','    if (a->deviceId == e->deviceId) return true;',...rows.filter(r=>r.nativeAliasTargets.length).map(r=>'    if (e->deviceId == '+q(r.deviceId)+') return '+r.nativeAliasTargets.map(id=>'a->deviceId == '+q(id)).join(' || ')+';'),'    return false;','}'].join('\n');

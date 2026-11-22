@@ -5,7 +5,7 @@
 #include <string_view>
 #include "../capabilities/hc-device-catalog.generated.h"
 namespace ymcc::lighting {
-inline constexpr char kCatalogSha256[] = "b81166ee3bc929ddcbe7e538dbb8fc47b2c793ffbc82df7bc8f30d8a66df010c";
+inline constexpr char kCatalogSha256[] = "2adfaeeaf86c315f7defe45ebefadad359b2a510e6017e74993b0e81b6344b69";
 inline constexpr const char* kExtensionLightingClasses[] = {"HandheldCompanion.Devices.OneXPlayer3", "HandheldCompanion.Devices.AYANEO3", "HandheldCompanion.Devices.AYANEONEXT2", "HandheldCompanion.Devices.OneXPlayerX2MiniPro"};
 inline bool identityMatches(std::string_view actual, std::string_view expected) noexcept {
     for (const char* cls : kExtensionLightingClasses) if (actual == cls && expected == cls) return true;
@@ -51,7 +51,7 @@ inline constexpr std::array<Route, 92> routes = {{
     {false, false, false, false, NativeProvider::Helper, 0},
     {true, true, false, false, NativeProvider::Helper, 1, false, false}, // AYANEOAIRPlusAMD
     {true, true, false, false, NativeProvider::Helper, 1, false, false}, // AYANEOAIRPlusAMDMendocino
-    {true, true, false, false, NativeProvider::Helper, 1, false, false}, // AYANEOAIRPlusIntel
+    {true, true, false, false, NativeProvider::Helper, 3, false, false}, // AYANEOAIRPlusIntel
     {true, true, false, false, NativeProvider::Helper, 1, false, false}, // AYANEOAIRPro
     {false, false, false, false, NativeProvider::Helper, 0},
     {false, false, false, false, NativeProvider::Helper, 0},

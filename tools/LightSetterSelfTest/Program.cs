@@ -140,6 +140,13 @@ internal static class LightSetterSelfTest
     {
         if (args.Length == 1 && args[0] == "--apex-hid-v2") { ApexLightingTests.Run(); return; }
         if (args.Length == 1 && args[0] == "--aokzoe-hid-v2-reenable") { AokzoeLightingTests.Run(); return; }
+        // 只跑 CEii 原生写入器的离线断言（不碰硬件、不碰 OXP3 共享内存记录），
+        // 方便在只改灯光字节序列时快速闭环。
+        if (args.Length == 1 && args[0] == "--ayaneo-ceii")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new { ok = true, checks = AyaneoCeiiLightingTests.Run() }));
+            return;
+        }
         if (args.Length != 0)
         {
             if (args.Length != 1 || args[0] != "--onex-serial-discovery")
@@ -463,9 +470,11 @@ internal static class LightSetterSelfTest
         checks += superJoyWindowsTransportChecks;
         var oemOwnershipChecks = AyaneoOemLightingRestoreTests.Run();
         checks += oemOwnershipChecks;
+        var ayaneoCeiiNativeChecks = AyaneoCeiiLightingTests.Run();
+        checks += ayaneoCeiiNativeChecks;
         var superJoyCombinedConsumerChecks = AyaneoSuperJoyConsumerTests.Run();
         checks += superJoyCombinedConsumerChecks;
-        Console.WriteLine(JsonSerializer.Serialize(new { ok = true, checks, oemOwnershipChecks, superJoyCombinedConsumerChecks, originalChecks, superJoyDependencyChecks, superJoyWindowsTransportChecks, superJoyRuntimeRouteAdmitted = true, hardwareWrites = false, HCAssemblyLoaded = false, actualPinnedHCQueue = true, oxp3PureHid = true, directCancelResult, directCancelError, directCancelOutcomes, directIssuedIncomplete, directTokenCancelledAtIssue, directCancelledWhileIncomplete, ownerCancelCalls, ownerCancelResult, ownerCancelError, ownerCancelOutcomes, ownerIssuedIncomplete, ownerTokenCancelledAtIssue, ownerCancelledWhileIncomplete, deadlineCancelCalls, deadlineCancelResult, deadlineCancelError, deadlineCancelOutcomes, deadlineIssuedIncomplete, deadlineTokenCancelledAtIssue, deadlineCancelledWhileIncomplete }));
+        Console.WriteLine(JsonSerializer.Serialize(new { ok = true, checks, oemOwnershipChecks, ayaneoCeiiNativeChecks, superJoyCombinedConsumerChecks, originalChecks, superJoyDependencyChecks, superJoyWindowsTransportChecks, superJoyRuntimeRouteAdmitted = true, hardwareWrites = false, HCAssemblyLoaded = false, actualPinnedHCQueue = true, oxp3PureHid = true, directCancelResult, directCancelError, directCancelOutcomes, directIssuedIncomplete, directTokenCancelledAtIssue, directCancelledWhileIncomplete, ownerCancelCalls, ownerCancelResult, ownerCancelError, ownerCancelOutcomes, ownerIssuedIncomplete, ownerTokenCancelledAtIssue, ownerCancelledWhileIncomplete, deadlineCancelCalls, deadlineCancelResult, deadlineCancelError, deadlineCancelOutcomes, deadlineIssuedIncomplete, deadlineTokenCancelledAtIssue, deadlineCancelledWhileIncomplete }));
     }
 }
 public enum FakeLed { Solid = 1 }

@@ -2,6 +2,7 @@
 import { ref, computed, provide, onMounted, onUnmounted, nextTick, watch } from 'vue';
 import { ymccDesignWidth, ymccStageWidth, YMCC_SHELL_BASE_WIDTH, YMCC_SHELL_BASE_HEIGHT, YMCC_SHELL_SCALE_BOOST } from '@/bridge/monitorLayout';
 import { useRouter } from 'vue-router';
+import { ROUTES } from '@/router';
 import { resetInnerPageViewport } from '@/bridge/pageViewport';
 import NavRail from '@/components/NavRail.vue';
 import DebugView from '@/components/DebugView.vue';
@@ -81,6 +82,7 @@ import { controllerEditorBackgroundHoldKey, nextLowBatteryStatic, shouldSkipVide
 import { createPowerResumeQueue, runPowerResumeTransaction } from '@/bridge/powerResume';
 import { readSettingsSection, saveSettingsSection } from '@/bridge/settingsRepository';
 import { isUiVisible, onUiVisibilityChange, setNativeWindowVisible, startUiPowerReconciliation } from '@/bridge/uiLifecycle';
+import { syncLightingFromSettings } from '@/bridge/startupLightingSync';
 import { onSharedPowerLifecycle, getSharedPowerLifecycle, requestSharedPowerLifecycleReadyConfirmation, isSharedPowerLifecycleAdmitted, type SharedPowerLifecycleSnapshot } from '@/bridge/powerLifecycleState';
 import { rememberPowerSourceMode, onPowerSourceNotification, startForegroundPowerSourceRefresh } from '@/bridge/powerSource';
 import { tdpRuntimeStore } from '@/bridge/tdpRuntimeState';
@@ -113,6 +115,41 @@ const uiVisible = ref(isUiVisible());
 let uiPowerReconciliation: ReturnType<typeof startUiPowerReconciliation> | null = null;
 let stopSharedPowerWatch: (() => void) | null = null;
 let stopSharedFanWakeWatch: (() => void) | null = null;
+
+// ── 启动灯光对账（bridge/startupLightingSync.ts）──
+// 机器重启/被原厂软件抢过控制权后，摇杆环会回到固件默认色，而面板里仍显示上次的
+// 颜色与效果。设置页只在自己挂载时才下发，所以这里每次打开软件都按已保存设置
+// 重新落一遍，并在底部留一条可关闭的提示（只在真的下发或失败时出现）。
+const startupSyncNotice = ref<{ text: string; tone: 'ok' | 'warn' } | null>(null);
+let startupLightingSyncTimer: number | null = null;
+let startupSyncNoticeTimer: number | null = null;
+const startupSyncModeLabels: Record<string, string> = {
+  solid: '常亮', breathing: '呼吸', rainbow: '彩虹', wheel: 'Wheel', ambilight: '氛围', gradient: '渐变', preset: '预设',
+};
+function dismissStartupSyncNotice(): void {
+  if (startupSyncNoticeTimer !== null) { window.clearTimeout(startupSyncNoticeTimer); startupSyncNoticeTimer = null; }
+  startupSyncNotice.value = null;
+}
+function showStartupSyncNotice(text: string, tone: 'ok' | 'warn'): void {
+  if (startupSyncNoticeTimer !== null) window.clearTimeout(startupSyncNoticeTimer);
+  startupSyncNotice.value = { text, tone };
+  startupSyncNoticeTimer = window.setTimeout(() => {
+    startupSyncNoticeTimer = null;
+    startupSyncNotice.value = null;
+  }, tone === 'warn' ? 12000 : 7000);
+}
+async function runStartupLightingSync(): Promise<void> {
+  const result = await syncLightingFromSettings();
+  if (result.status === 'skipped') return; // 无灯光能力/原厂接管/读取失败：不打扰
+  if (result.status === 'failed') {
+    showStartupSyncNotice(`灯光未能按面板设置落地：${result.reason ?? '未知原因'}`, 'warn');
+    return;
+  }
+  const mode = startupSyncModeLabels[result.mode ?? ''] ?? result.mode ?? '';
+  const brightness = result.brightness ?? 0;
+  const suffix = brightness > 0 ? `${mode} · 亮度 ${brightness}%` : `${mode} · 亮度 0（已熄灭）`;
+  showStartupSyncNotice(`已按面板设置同步灯光：${suffix}${result.splitRings ? '（左环主色 / 右环副色）' : ''}`, 'ok');
+}
 
 const BOOT_TASK = BOOT_CONTROL_CENTER_TASK;
 const BOOT_CFG = 'C:\\SOFT\\YeMan\\PowerControl\\boot_config.json';
@@ -223,6 +260,22 @@ const store = useDebugStore();
 // editor as a full-screen, centered bubble in the main WebView.
 // Owned editor/monitor-preview children share the lightweight shell, never main hardware startup.
 const isStandaloneEditor = computed(() => ['/button-mapping/shortcuts', '/monitor/hud-preview'].includes(router.currentRoute.value.path));
+// 一级菜单 = 侧栏能到达的页面。只有这些页面按 B 才「收起面板」；二级页/独立编辑器
+// 自己负责返回上一级（它们会先处理 ipc:gamepad-back）。
+const PRIMARY_MENU_PATHS = new Set(ROUTES.filter(route => !('hidden' in route && route.hidden) && !('testing' in route)).map(route => route.path));
+const isPrimaryMenu = computed(() => !isStandaloneEditor.value && PRIMARY_MENU_PATHS.has(router.currentRoute.value.path));
+// 页面没消费 B（引擎的兜底分支）时：一级菜单就收起面板，和侧栏「最小化」同一条通道。
+// 正在输入文字时这一下只收焦点，避免手一抖把整个面板关掉。
+function onUnhandledBack(event: Event): void {
+  if (!isPrimaryMenu.value) return;
+  event.preventDefault();
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))) {
+    active.blur();
+    return;
+  }
+  void windowApi.minimize().catch(() => undefined);
+}
 const backgroundUrl = ref('');
 const backgroundKind = ref<BackgroundKind>('image');
 const backgroundVideo = ref<HTMLVideoElement | null>(null);
@@ -1143,6 +1196,12 @@ function onUiSettingsLoaded(): void {
   backgroundBlur.value = getBackgroundBlur();
   backgroundVideoAutoPause.value = getUiSetting('videoBatteryPause');
   updateLowBatteryStatic(topMonitorData.value);
+  // 字体/界面缩放偏好变更或加载后立即重算（无需新增事件监听）。
+  updateScale();
+  settleScale();
+  // 档位由 native 同比加宽 fullHeight 吸附窗：舞台宽度不变，字号随窗口变大。
+  // 失败只影响"放大"这一项，不影响布局本身，因此不抛给界面。
+  void windowApi.uiScalePercent(Number(getUiSetting('uiScalePercent')) || 100).catch(() => false);
 }
 // ── UI 缩放层：设计基准 580×780，整体在窗口中居中显示 ──
 // 用户偏好 2026-08-04：在原本「按窗口高度贴齐」基础上再放大 30%，居中后左右两侧留空更协调。
@@ -1216,6 +1275,10 @@ function updateScale() {
   // The shared shell scale is route-independent. A wider monitor workbench
   // must adapt its own width, never shrink the sidebar, toolbar or other UI.
   const widthCapped = w / YMCC_SHELL_BASE_WIDTH;
+  // 字体/界面档位不再乘在这里。fullHeight 吸附窗的宽度正好等于「设计宽度 ×
+  // 自动缩放」，一旦再乘档位，ymccStageWidth() 会返回 580/档位，舞台被压窄，
+  // 顶部监控条与侧边导航就会出省略号。档位改为由 native 同比加宽窗口来兑现
+  // （window.uiScalePercent），舞台始终保持设计宽度，这里只用自动缩放。
   setUiScale(Math.min(boosted, widthCapped));
   return changed;
 }
@@ -1990,6 +2053,7 @@ onMounted(async () => {
   window.addEventListener('ipc:gamepad.brightness', onGamepadBrightness as EventListener);
   window.addEventListener('ipc:gamepad.mouse-toggle', onGamepadMouseToggle as EventListener);
   window.addEventListener('ipc:mouseMode.changed', onGamepadMouseToggle as EventListener);
+  window.addEventListener('ipc:gamepad-back-unhandled', onUnhandledBack);
   stopGamepad = startGamepad({ router, onAction: (l) => store.pushGamepad(l) });
   stopGyroTelemetry = on('gyro.telemetry', (data) => {
     window.dispatchEvent(new CustomEvent('input:motion-telemetry', { detail: data }));
@@ -2245,6 +2309,15 @@ onMounted(async () => {
   applyTrayResident().catch(() => {});
   // ── 音乐播放：启动期恢复已配置的音乐目录（不自动播放）──
   void initMusic();
+  // ── 灯光对账：机器重启后摇杆环会回到固件默认色，这里按面板保存的设置重新落地 ──
+  // 放在启动链尾部、延迟 1.8s：避免与 TDP/风扇/托盘初始化抢 I/O，LED 子进程本身
+  // 还要做 dll 校验与 HC 握手（约 2-4s），抢在界面首帧之后更稳。
+  if (!aiCpuIsolated) {
+    startupLightingSyncTimer = window.setTimeout(() => {
+      startupLightingSyncTimer = null;
+      void runStartupLightingSync();
+    }, 1800);
+  }
   // ── 开机启动自愈：若用户曾开启但计划任务被误删，自动重建 ──
   if (!aiCpuIsolated) healBootTask().catch(() => {});
 
@@ -2263,6 +2336,8 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   backgroundPresentationDisposed = true;
+  if (startupLightingSyncTimer !== null) { window.clearTimeout(startupLightingSyncTimer); startupLightingSyncTimer = null; }
+  dismissStartupSyncNotice();
   stopUndervoltRuntime();
   cancelBootModeLaunches();
   fanWakeRequests.clear();
@@ -2337,6 +2412,7 @@ onUnmounted(() => {
   window.removeEventListener('ipc:gamepad.brightness', onGamepadBrightness as EventListener);
   window.removeEventListener('ipc:gamepad.mouse-toggle', onGamepadMouseToggle as EventListener);
   window.removeEventListener('ipc:mouseMode.changed', onGamepadMouseToggle as EventListener);
+  window.removeEventListener('ipc:gamepad-back-unhandled', onUnhandledBack);
   window.removeEventListener('ipc:window.minimized', onBackgroundWindowHidden as EventListener);
   window.removeEventListener('ipc:window.hidden', onBackgroundWindowHidden as EventListener);
   window.removeEventListener('ipc:window.restored', onBackgroundWindowShown as EventListener);
@@ -2461,6 +2537,20 @@ onUnmounted(() => {
         <router-view v-slot="{ Component }">
           <component :is="Component" />
         </router-view>
+      </div>
+      <!-- 启动灯光对账提示：只在真的下发过/失败时出现，7-12 秒后自动消失，可点关闭。
+           放在 .app-stage 内而不是根节点：随界面 zoom 一起缩放，6 寸屏上字号才一致。 -->
+      <div
+        v-if="startupSyncNotice"
+        class="startup-sync-notice"
+        :class="`is-${startupSyncNotice.tone}`"
+        role="status"
+        aria-live="polite"
+        @click="dismissStartupSyncNotice()"
+      >
+        <span class="startup-sync-dot" aria-hidden="true" />
+        <span class="startup-sync-text">{{ startupSyncNotice.text }}</span>
+        <span class="startup-sync-close" aria-hidden="true">×</span>
       </div>
     </div>
 
@@ -2597,5 +2687,62 @@ onUnmounted(() => {
   /* Leave room for the gamepad focus ring and the final control itself. */
   padding: 12px 12px calc(var(--gamepad-safe-bottom, 24px) + var(--gamepad-clip-bottom, 0px));
   scroll-padding: 24px 0 var(--gamepad-safe-bottom, 24px);
+}
+/* 启动灯光对账提示：底部居中的轻量状态条，不遮挡可交互区域（距底 12px，
+   高度约 34px，最多 7-12 秒自动消失，点一下也能关）。 */
+.startup-sync-notice {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(520px, 84%);
+  padding: 7px 11px;
+  border-radius: var(--radius-ctrl);
+  border: 1px solid var(--accent-border);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.34);
+  cursor: pointer;
+  animation: startup-sync-in 0.22s ease-out;
+}
+.startup-sync-notice.is-warn {
+  border-color: color-mix(in srgb, var(--accent-2) 55%, transparent);
+}
+.startup-sync-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 60%, transparent);
+}
+.startup-sync-notice.is-warn .startup-sync-dot {
+  background: var(--accent-2);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent-2) 60%, transparent);
+}
+.startup-sync-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.startup-sync-close {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+}
+@keyframes startup-sync-in {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .startup-sync-notice { animation: none; }
 }
 </style>

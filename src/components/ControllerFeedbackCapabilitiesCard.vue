@@ -127,6 +127,14 @@ const vibrationStateText = computed(() => {
 // ROG/MSI 实际 writer 都消费左右两色；不能因缺少常规副色位藏掉右侧设置。
 const splitColorEffect = computed(() => settings.value.lighting.mode === 'ambilight' && caps.value.ledEffects.includes('ambilight'));
 const supportsSecondColor = computed(() => caps.value.supportsSecondColor === true || splitColorEffect.value);
+// AYANEO CEii 机型（air-plus 家族）整机只有左右两个摇杆环，没有独立的 AYA 标志灯：
+// 主色 → 左环，副色 → 右环。副色下拉必须配一句说明，否则用户会以为"副颜色"是
+// 某个看不见的标志位、或者以为主副联动——2026-11-22 之前的实现正是把副色只喂到
+// 右环的四分之一区并错排通道，用户拍照看到的就是"上半圈发粉白光、主副不能分开调"。
+const ringSplitHint = computed(() =>
+  !splitColorEffect.value &&
+  caps.value.supportsSecondColor === true &&
+  caps.value.machineFamily === 'ayanero');
 const ledReasonText = computed(() => {
   if (caps.value.ledReason === 'machine-unsupported') return '当前机型在机型库中无灯光能力（HC 无 DynamicLighting），灯光功能已隐藏。';
   if (caps.value.ledReason === 'backend-not-implemented') return '机型库支持本机灯光，但 YMCC 尚未实现该机型灯光后端，选项已禁用。';
@@ -157,19 +165,53 @@ const speedRelevant = computed(() => caps.value.lightingFixedSpeed !== true && !
 const presetSecondColor = computed(() => settings.value.lighting.mode === 'preset' && caps.value.presetSupportsSecondColor === true);
 // 颜色预设：HC 用开放式 ColorPicker（任意色），YMCC 以常用色下拉近似。
 // 主/副颜色由 native 能力与当前效果共同判定；氛围分区可分别设置左右颜色。
+//
+// 色卡规则（改任何一条前请先读）：
+//   1. 名称必须与该 hex 的色相自洽——不能出现"写着品红、看着是玫红"。
+//      hex 一律取公认标准色（CSS 命名色 / Material 主色），注释里标出处便于核对。
+//   2. 按色相环等距排布，相邻两项色相差 ≥15°。历史上「青蓝 #2ea6ff」与
+//      「宝蓝 #1c7ed6」色相只差 2°，只靠亮度区分，在十几像素的色块上根本分不出，
+//      选哪个都像同一个颜色——这是"色卡不标准"最实际的害处。
+//   3. 避免过暗取值：本机左右环走官方 192 量程，暗色会被压到几乎看不出色相。
+//      例外是纯红（#ff0000 的 R 通道本身满载，灯上依然是正红）。
+//   4. 灯是加色混光且 PWM 是线性强度，而 hex 是 sRGB（带 gamma 编码）。直接把
+//      sRGB 当 PWM 下发，中间调会偏亮偏白（通道越暗差得越多）。所以取色时优先
+//      单通道或双通道满载／零值的颜色，色相最纯，与色块的偏差也最小。
+//   5. 默认主色 #2ea6ff 与副色 #9d7cff（settingsRepository 里写死的初始值）必须
+//      留在表内，否则新装机的默认值在下拉框里回显不出来。
 const lightColors = [
-  { name: '青蓝', value: '#2ea6ff' },
-  { name: '天蓝', value: '#1c7ed6' },
-  { name: '紫罗兰', value: '#9d7cff' },
-  { name: '品红', value: '#e64980' },
-  { name: '薄荷', value: '#6fe4bd' },
-  { name: '翠绿', value: '#2f9e44' },
-  { name: '暖白', value: '#f4d89d' },
-  { name: '琥珀', value: '#fab005' },
-  { name: '珊瑚', value: '#ff7a59' },
-  { name: '纯白', value: '#ffffff' },
+  // 红→橙→黄：色相 0° / 16° / 45°
+  // 不设柠檬黄(56°)：与琥珀色相只差 11°，是整表最冗余的一对，灯上几乎同色。
+  { name: '正红', value: '#ff0000' },     // CSS red，单通道满载，色相最纯
+  { name: '珊瑚', value: '#ff7f50' },     // CSS coral
+  { name: '琥珀', value: '#ffbf00' },     // amber（R+G 满载，暖橙光）
+  // 黄绿→绿→青：色相 80° / 131° / 187°
+  // 不设薄荷(160°)：与翠绿、青挤在同一段，且最淡（灯上泛白青），色相最不鲜明。
+  { name: '黄绿', value: '#9acd32' },     // CSS yellowgreen
+  { name: '翠绿', value: '#2f9e44' },     // 历史定稿值，本机实测观感为准，勿改
+  // 青→蓝→紫：色相 187° / 206° / 225° / 255°
+  { name: '青', value: '#00bcd4' },       // Material Cyan 500，G+B 满载，纯青光
+  { name: '天蓝', value: '#2ea6ff' },     // 默认主色，勿改（见规则 5）
+  { name: '宝蓝', value: '#4169e1' },     // CSS royalblue
+  { name: '紫罗兰', value: '#9d7cff' },   // 默认副色，勿改（见规则 5）
+  { name: '品红', value: '#ff00ff' },     // CSS magenta，R+B 满载
+  // 中性色放末尾，与彩色区隔开
+  { name: '暖白', value: '#f4d89d' },     // 暖黄白，夜间护眼
+  { name: '纯白', value: '#ffffff' },     // CSS white
 ];
-const colorOptions = computed(() => lightColors.map((c) => ({ value: c.value, label: c.name })));
+const colorOptions = computed(() => {
+  const options = lightColors.map((c) => ({ value: c.value, label: c.name, swatch: c.value }));
+  // 跨设备/历史版本存下的颜色可能不在色卡里（例如旧版的 #ff3b30）。补一条
+  // “自定义”保证原值能回显——否则 Dropdown 找不到匹配项就只显示占位符，
+  // 用户会以为自己的设置丢了。
+  for (const current of [settings.value.lighting.color, settings.value.lighting.color2]) {
+    const value = validColor(current);
+    if (!options.some((option) => option.value === value)) {
+      options.push({ value, label: `自定义 ${value.toUpperCase()}`, swatch: value });
+    }
+  }
+  return options;
+});
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
   const n = Number(value);
@@ -223,17 +265,40 @@ async function loadFeedback(epoch: number): Promise<void> {
   clampPresetToCaps();
 }
 
+// 启动竞态：面板刚起来时 native 可能还没解析完机型身份，首帧能力查询会返回
+// 一份"空表"（ledEffects 为空、ledAvailable=false、且没有任何 ledReason）。
+// 旧实现把它当成"本机不支持"，于是灯光下拉框里看不到 breathing 等真实效果，
+// 要等组件被 KeepAlive 逐出后重进才能看到。这里按次数有限重试，不做轮询：
+// 拿到已解析的结果就停，最多 4 次（0/400/1000/2000ms），之后仍按真实结果呈现。
+const CAPS_RETRY_DELAYS_MS = [0, 400, 1000, 2000];
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+function capabilitiesUnresolved(value: LedFeedbackCapabilities): boolean {
+  // 机型身份没出来 → 一定没解析完。
+  if (!value.machineFamily) return true;
+  // 整份表为空且没有给出任何原因 → 视为尚未解析（真不支持的机型会带 ledReason）。
+  return value.ledEffects.length === 0 && !value.ledAvailable && !value.ledReason;
+}
 async function refreshCapabilities(showLoading = false, epoch = feedbackEpoch): Promise<void> {
   const request = ++capabilitiesRequest;
   if (!currentFeedbackSession(epoch)) return;
   if (showLoading) capsLoading.value = true;
+  const stale = () => !currentFeedbackSession(epoch) || request !== capabilitiesRequest;
+  let result: LedFeedbackCapabilities | null = null;
   try {
-    const result = await gamepadFeedback.capabilities();
-    if (!currentFeedbackSession(epoch) || request !== capabilitiesRequest) return;
-    caps.value = result;
-  } catch {
-    if (!currentFeedbackSession(epoch) || request !== capabilitiesRequest) return;
-    caps.value = { ledAvailable: false, brightnessAvailable: false, ledEffects: [], vibrationAvailable: false, physicalPrimarySlot: -1 };
+    for (let attempt = 0; attempt < CAPS_RETRY_DELAYS_MS.length; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(CAPS_RETRY_DELAYS_MS[attempt]);
+        if (stale()) return;
+      }
+      try {
+        result = await gamepadFeedback.capabilities();
+      } catch {
+        result = null;
+      }
+      if (stale()) return;
+      if (result && !capabilitiesUnresolved(result)) break;
+    }
+    caps.value = result ?? { ledAvailable: false, brightnessAvailable: false, ledEffects: [], vibrationAvailable: false, physicalPrimarySlot: -1 };
   } finally {
     if (currentFeedbackSession(epoch) && request === capabilitiesRequest) capsLoading.value = false;
   }
@@ -551,6 +616,7 @@ onBeforeUnmount(deactivateFeedback);
             />
           </div>
           <p v-if="splitColorEffect" class="unavailable-hint lighting-effect-hint">当前氛围为左右分区固定配色，可分别调整；不会随屏幕或时间自动变色。</p>
+          <p v-else-if="ringSplitHint" class="unavailable-hint lighting-effect-hint">主颜色作用于左摇杆环，副颜色作用于右摇杆环；本机没有独立的标志灯。</p>
           <p v-if="caps.lightingFixedSpeed" class="unavailable-hint">本机灯效速度由固件固定。</p>
           <div class="light-slider-grid">
             <Slider

@@ -44,9 +44,11 @@ static bool gameOverlaySurfaceRestore(){
     if(!surface)return true;
     g_gameOverlayPanel.close();
     g_mainWebViewComposition.setBackgroundInput(false);
-    if(g_controllerEditorWidth.active()){
-        try{endControllerEditorWidth(g_controllerEditorWidth.owner);}catch(...){g_controllerEditorWidth={};}
-    }
+    // 借用覆盖层再归还，不等于编辑器卸载。以前在这里无条件 endControllerEditorWidth()，
+    // 于是"隐藏面板再呼出"会把窗口缩回基础宽度，而前端编辑器还按大屏布局在跑，
+    // 右侧工作区直接被裁掉。加宽会话的归属应该只看前端组件的挂载状态：
+    // 组件卸载走 ipc 的 enabled=false，WebView 重载走 NavigationStarting，
+    // 这里只负责把回主窗口后的几何重新按会话说算一次（见函数末尾）。
     if(g_ctrl)g_ctrl->put_IsVisible(FALSE);
     ShowWindow(surface,SW_HIDE);
     const bool treeRestored=g_gameOverlayDisplayTree.restore();
@@ -55,7 +57,15 @@ static bool gameOverlaySurfaceRestore(){
     gameOverlaySurfaceRecord("surface-return",{{"originalParentRestored",SUCCEEDED(restored)},{"hresult",static_cast<std::int64_t>(restored)}});
     if(FAILED(restored)||!treeRestored)return false; // Keep ownership for a bounded explicit retry.
     if(!DestroyWindow(surface)&&IsWindow(surface))return false;
-    g_gameOverlaySurfaceAttached=false;g_gameOverlaySurface=nullptr;return true;
+    g_gameOverlaySurfaceAttached=false;g_gameOverlaySurface=nullptr;
+    // WebView 已经回到主窗口，layoutWindow 也随之恢复；此时若编辑器仍挂着，
+    // 立刻按会话重新加宽，避免出现"闪一下基础宽度再自己变宽"的观感。
+    if(g_controllerEditorWidth.active()){
+        try{
+            if(!applyControllerEditorWidth())endControllerEditorWidth(g_controllerEditorWidth.owner);
+        }catch(...){g_controllerEditorWidth={};}
+    }
+    return true;
 }
 static LRESULT CALLBACK gameOverlaySurfaceProc(HWND h,UINT m,WPARAM w,LPARAM l){
     LRESULT result=0;
