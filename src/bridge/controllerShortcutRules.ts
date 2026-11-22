@@ -264,7 +264,8 @@ export const CONTROLLER_SHORTCUT_ACTIONS: ControllerShortcutAction[] = [
   { id: 'app.exit', label: '退出软件', category: '窗口', scope: 'native-global', available: false },
   { id: 'os.returnDesktop', label: '返回桌面', category: '系统', scope: 'native-global', available: true },
   { id: 'game.killCurrent', label: '结束当前游戏', category: '游戏', scope: 'native-global', available: true },
-  { id: 'os.openTouchKeyboard', label: '打开触控键盘', category: '系统', scope: 'native-global', available: true },
+  { id: 'os.openTouchKeyboard', label: '呼出/收起触控键盘', category: '系统', scope: 'native-global', available: true,
+    description: '键盘未显示时呼出，已显示时收起。输入框聚焦自动弹键盘仍只开不关。' },
   { id: 'mouse.toggle', label: '模拟鼠标', category: '输入', scope: 'native-global', available: true },
   {
     id: 'input.frontendButton', label: '前端呼出按钮', category: '输入', scope: 'native-global', available: true,

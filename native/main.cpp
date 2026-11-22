@@ -10908,7 +10908,7 @@ static void nativeAdjustBrightness(int dir); // Start+左右转发亮度调节
 static json nativeCaptureGameCloseTarget();
 static json nativeCloseGameAction(const json&);
 static void runKillBat(const json& expected);          // 选择 + B → 关闭入队时捕获的实际游戏实例
-static void openTouchKeyboard();   // 选择 + X → 呼出 Windows 触摸键盘
+static void openTouchKeyboard(bool toggleIfVisible = false);   // 选择 + X → 呼出/收起 Windows 触摸键盘
 static bool returnToDesktop();     // 选择 + A → 内部 Win+D 立即返回桌面
 static void toggleMouseMode();     // 选择 + Y → 启停当前选中的模拟鼠标后端
 static void ipc_emit(const std::string& ev, const json& data);
@@ -60865,7 +60865,7 @@ static bool nativeYmccShortcutEmit(const std::string& action, int delta, uint64_
         const auto expected=nativeCaptureGameCloseTarget();
         return nativeYmccShortcutSubmit([expected] { runKillBat(expected); }, SerialJobKind::YmccOwn, sourceEpoch, wmiGeneration, wmiSequence, keyboardWmiFallback, producerTokens);
     }
-    if (action == "os.openTouchKeyboard") return nativeYmccShortcutSubmit([] { openTouchKeyboard(); }, SerialJobKind::YmccOwn, sourceEpoch, wmiGeneration, wmiSequence, keyboardWmiFallback, producerTokens);
+    if (action == "os.openTouchKeyboard") return nativeYmccShortcutSubmit([] { openTouchKeyboard(true); }, SerialJobKind::YmccOwn, sourceEpoch, wmiGeneration, wmiSequence, keyboardWmiFallback, producerTokens);
     if (action == "mouse.toggle") {
         std::string backend;
         { std::lock_guard<std::mutex> lock(g_gamepadSettingsMx); backend = g_mouseBackend; }
@@ -62545,7 +62545,7 @@ static void gamepadEval() {
         if (gpKxHoldStart == 0) gpKxHoldStart = now;
         if (gpKxArmed && nativeShortcutLegacyDefaultAllowed("openKeyboard", g_openKeyboard) && (now - gpKxHoldStart) >= HOLD_MS) {
             gpKxArmed = false;
-            gamepadSerialSubmitCurrentPower([] { openTouchKeyboard(); });
+            gamepadSerialSubmitCurrentPower([] { openTouchKeyboard(true); });
         }
     } else { gpKxHoldStart = 0; gpKxArmed = true; }
 
@@ -65302,9 +65302,10 @@ static void runKillBat(const json& expected) {
 // 再 CreateProcess 它是彻底的空操作——实测不新建进程、不出现窗口。因此优先走 shell 的
 // ITipInvocation::Toggle（CLSID_UIHostNoLaunch，Win10/11 通用，能异步唤起宿主），只有在
 // 宿主类不可用或唤起后仍看不到面板时才回落启动 TabTip.exe（常驻时无害，不会重复弹窗）。
-// 语义固定为「打开」而非「切换」：keyboard.open 也走本函数（输入框聚焦触发），做成切换
-// 会让重复聚焦把键盘关掉。宿主对象要求 STA，而快捷键回调跑在 MTA 的 gamepad-serial-worker，
-// 所以整段在一次性 STA 线程内完成。
+// 2026-11-22 二次修正：toggleIfVisible=true 时对已显示的键盘执行收起（快捷键要「再按一次关掉」）；
+// toggleIfVisible=false 保持「只开不关」，因为 keyboard.open（输入框聚焦）复用本函数，
+// 做成切换会让重复聚焦把键盘关掉。宿主对象要求 STA，而快捷键回调跑在 MTA 的
+// gamepad-serial-worker，所以整段在一次性 STA 线程内完成。
 struct YmccTipInvocation : IUnknown {
     virtual HRESULT __stdcall Toggle(HWND hwndDesktop) = 0;
 };
@@ -65352,21 +65353,24 @@ static void launchTabTipProcess() {
         CloseHandle(pi.hProcess);
     }
 }
-static void openTouchKeyboard() {
+static void openTouchKeyboard(bool toggleIfVisible) {
     bool spawned = false;
     try {
-        std::thread worker([] {
+        std::thread worker([toggleIfVisible] {
             const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-            // 已显示就不再 Toggle：这个入口同时服务输入框聚焦，重复调用不能把键盘关掉。
-            if (!tipInputPaneVisible()) {
+            const bool visible = tipInputPaneVisible();
+            if (visible && toggleIfVisible) {
+                // 快捷键再按一次：对已显示的输入面板，Toggle 是「收起」语义。
+                tipToggleKeyboard();
+            } else if (!visible) {
                 const bool toggled = tipToggleKeyboard();
-                bool visible = false;
+                bool shown = false;
                 // Toggle 是异步的：给宿主最多 100ms 出现时间，没出现才走 TabTip 兜底。
-                for (int attempt = 0; toggled && attempt < 5 && !visible; ++attempt) {
+                for (int attempt = 0; toggled && attempt < 5 && !shown; ++attempt) {
                     Sleep(20);
-                    visible = tipInputPaneVisible();
+                    shown = tipInputPaneVisible();
                 }
-                if (!visible) launchTabTipProcess();
+                if (!shown) launchTabTipProcess();
             }
             if (SUCCEEDED(com)) CoUninitialize();
         });
@@ -65374,7 +65378,8 @@ static void openTouchKeyboard() {
         spawned = true;
     } catch (...) {
     }
-    if (!spawned) launchTabTipProcess();
+    // 只在「要开」时兜底；收起失败时启动 TabTip 反而会把它重新拉起来。
+    if (!spawned && !toggleIfVisible) launchTabTipProcess();
 }
 
 // 选择 + A：内部模拟 Win+D 返回桌面；不启动脚本、不等待、不切回游戏窗口。
