@@ -9,7 +9,11 @@
 // 这里只做「按已保存设置重新下发」，不改任何设置值，也不做猜测性写硬件：
 //   - 能力未声明 / 后端未实现  → 跳过（回到旧行为，不报错）
 //   - 灯光来源是原厂(oem)      → 跳过（原厂灯效归原厂管，不能拿缓存值覆盖）
-//   - 下发失败                → 如实回报原因，交给调用方提示
+//   - 从未配置过灯光 → 跳过（新装机不去动固件默认灯效）
+//   - 配置过但当前是「关」→ 一样要下发（enabled=false ⇒ 整灯熄灭）。灯光是易失状态：
+//     用户关掉之后一重启，固件会把环灯重新点亮成默认蓝色，而面板仍显示关着，这正是
+//     「状态写着未启动、机器却亮着」的来源。所以判据是「配置过」，而不是「当前开着」。
+//   - 下发失败 → 如实回报原因，交给调用方提示
 //
 // 读回验证的边界：CEii 的灯光寄存器读回恒为 0（aya-light-probe.log 里
 // 0xb2..0xc5 / 0x72..0x85 全 0x00），本机没有可靠的读数通路，因此这里的"一致"
@@ -31,6 +35,7 @@ export interface StartupLightingSyncResult {
 
 type LedSettings = {
   ownership?: string;
+  configured?: boolean;
   enabled?: boolean;
   off?: boolean;
   mode?: string;
@@ -42,6 +47,25 @@ type LedSettings = {
 };
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
+
+// settingsRepository 里的出厂默认值。用来反推「旧版本没写 configured 标记」的配置意图：
+// 只要任一字段偏离出厂值，说明用户动过灯光页，升级后不能把他的意图当成「没配置」。
+const LIGHTING_DEFAULTS = { mode: 'solid', color: '#2ea6ff', color2: '#9d7cff', speed: 55, brightness: 65 };
+
+function lightingConfigured(led: LedSettings): boolean {
+  if (led.configured === true) return true;
+  // 「要灯」或「要关灯」本身就是明确意图。
+  if (led.enabled === true || led.off === true) return true;
+  // 兼容旧版本：没有任何标记时用字段偏离度反推。
+  if (typeof led.mode === 'string' && led.mode && led.mode !== LIGHTING_DEFAULTS.mode) return true;
+  if (typeof led.presetId === 'string' && led.presetId.trim() !== '') return true;
+  if (HEX.test(String(led.color)) && String(led.color).toLowerCase() !== LIGHTING_DEFAULTS.color) return true;
+  if (HEX.test(String(led.color2)) && String(led.color2).toLowerCase() !== LIGHTING_DEFAULTS.color2) return true;
+  const speed = Number(led.speed), brightness = Number(led.brightness);
+  if (Number.isFinite(speed) && Math.round(speed) !== LIGHTING_DEFAULTS.speed) return true;
+  if (Number.isFinite(brightness) && Math.round(brightness) !== LIGHTING_DEFAULTS.brightness) return true;
+  return false;
+}
 
 function readLedSettings(raw: unknown): LedSettings {
   if (!raw || typeof raw !== 'object') return {};
@@ -69,10 +93,11 @@ export async function syncLightingFromSettings(): Promise<StartupLightingSyncRes
 
   // 用户明确选了原厂灯光：原厂态由固件/AYASpace 维持，缓存值不能反向覆盖。
   if (led.ownership === 'oem') return { status: 'skipped', reason: 'oem-ownership' };
-  // 从未启用过灯光（新装机默认 enabled=false / off=false）：不去动固件默认灯效。
-  // 否则第一次打开软件就会把机器自己的灯效改掉，用户会认为是软件乱写硬件。
-  // 反过来，只要用户表达过"要灯"（enabled）或"要关灯"（off），就按面板落地。
-  if (led.enabled !== true && led.off !== true) return { status: 'skipped', reason: 'lighting-not-configured' };
+  // 只跳过「真正没配置过」的机器：新装机不去动固件默认灯效，否则第一次打开软件
+  // 就把机器自己的灯改了，用户会以为是软件乱写硬件。反过来，用户动过任何灯光控件
+  // （包括把「启用控制」关掉）都算配置过，必须按这份意图落地——关着的时候也要重新
+  // 熄一遍，否则重启后固件默认灯效会重新亮起，和面板显示的「未启动」互相打脸。
+  if (!lightingConfigured(led)) return { status: 'skipped', reason: 'lighting-not-configured' };
 
   let caps;
   try {

@@ -13,6 +13,8 @@ import { EDIT_REPEAT_BASE_MS } from '@/gamepad/sliderRepeat';
 
 interface LightingSettings {
   ownership: 'ymcc' | 'oem';
+  /** 用户是否亲手动过灯光控件。启动对账靠它区分「出厂未配置」与「用户明确关灯」。 */
+  configured: boolean;
   enabled: boolean;
   off: boolean;
   mode: string;
@@ -29,7 +31,7 @@ interface FeedbackSettings {
 
 const DEFAULT_FEEDBACK: FeedbackSettings = {
   vibrationStrength: 70,
-  lighting: { ownership: 'ymcc', enabled: false, off: false, mode: 'solid', presetId: '', color: '#2ea6ff', color2: '#9d7cff', speed: 55, brightness: 65 },
+  lighting: { ownership: 'ymcc', configured: false, enabled: false, off: false, mode: 'solid', presetId: '', color: '#2ea6ff', color2: '#9d7cff', speed: 55, brightness: 65 },
 };
 
 const settings = ref<FeedbackSettings>(structuredClone(DEFAULT_FEEDBACK));
@@ -246,6 +248,7 @@ async function loadFeedback(epoch: number): Promise<void> {
       vibrationStrength: clampInt(raw?.vibrationStrength, DEFAULT_FEEDBACK.vibrationStrength, 0, 100),
       lighting: {
         ownership: lighting?.ownership === 'oem' ? 'oem' : 'ymcc',
+        configured: lighting?.configured === true,
         enabled: lighting?.enabled === true,
         off: lighting?.off === true,
         mode: typeof lighting?.mode === 'string' && effectLabels[lighting.mode] ? lighting.mode : DEFAULT_FEEDBACK.lighting.mode,
@@ -398,6 +401,7 @@ async function onOwnership(value: string | number): Promise<void> {
   if (applyTimer !== undefined) { window.clearTimeout(applyTimer); applyTimer = undefined; }
   ++ledApplyRequest;
   settings.value.lighting.ownership = value;
+  settings.value.lighting.configured = true;
   ownershipBusy.value = true;
   try {
     // Persist intent before applying. Unlike best-effort slider writes, failure
@@ -412,6 +416,9 @@ async function onOwnership(value: string | number): Promise<void> {
 }
 async function onLightingChanged(): Promise<void> {
   if (!feedbackActive) return;
+  // 用户亲手动过灯光：记下意图，启动对账才能在「关着」时也把灯重新熄一遍，
+  // 而不是因为 enabled=false 被当成「没配置过」而放任固件默认灯效亮着。
+  settings.value.lighting.configured = true;
   const epoch = feedbackEpoch;
   await saveFeedback();
   if (currentFeedbackSession(epoch)) scheduleLedApply();

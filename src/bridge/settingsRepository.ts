@@ -223,6 +223,7 @@ const DEFAULTS: UnifiedSettings = {
     feedback: {
       vibrationStrength: 70,
       lighting: {
+        configured: false,
         enabled: false,
         off: false,
         mode: 'solid',

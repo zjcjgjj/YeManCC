@@ -140,14 +140,21 @@ function showStartupSyncNotice(text: string, tone: 'ok' | 'warn'): void {
 }
 async function runStartupLightingSync(): Promise<void> {
   const result = await syncLightingFromSettings();
-  if (result.status === 'skipped') return; // 无灯光能力/原厂接管/读取失败：不打扰
+  if (result.status === 'skipped') {
+    // 从未配置过灯光时，固件默认灯效会自己亮着；与其让用户对着"面板说关、机器却亮"
+    // 发懵，不如在启动时把真实来源讲清楚（其余跳过原因仍然不打扰）。
+    if (result.reason === 'lighting-not-configured') {
+      showStartupSyncNotice('灯光尚未在面板中配置，当前由固件默认灯效点亮；到「灯光与振动」里开关一次即可由 YMCC 接管。', 'ok');
+    }
+    return;
+  }
   if (result.status === 'failed') {
     showStartupSyncNotice(`灯光未能按面板设置落地：${result.reason ?? '未知原因'}`, 'warn');
     return;
   }
   const mode = startupSyncModeLabels[result.mode ?? ''] ?? result.mode ?? '';
   const brightness = result.brightness ?? 0;
-  const suffix = brightness > 0 ? `${mode} · 亮度 ${brightness}%` : `${mode} · 亮度 0（已熄灭）`;
+  const suffix = brightness > 0 ? `${mode} · 亮度 ${brightness}%` : '关闭（亮度 0）';
   showStartupSyncNotice(`已按面板设置同步灯光：${suffix}${result.splitRings ? '（左环主色 / 右环副色）' : ''}`, 'ok');
 }
 

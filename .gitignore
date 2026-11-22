@@ -3,6 +3,8 @@ node_modules/
 
 # 构建产物（vite 输出、esbuild 临时产物、本地打包）
 dist/
+# 部署时用独立输出目录构建（避免清空 dist 触发清理动作），产物不入库
+.ymcc-build-*/
 build/
 PowerControl/pawnio/build/
 PowerControl/pawnio/dist/
