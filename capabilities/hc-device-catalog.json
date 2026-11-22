@@ -15629,7 +15629,7 @@
             {
               "role": "entry",
               "path": "FanLab/LightSetter/Program.cs",
-              "sha256": "aa96595391e59d3820634a556814b76a5cd28356c1cf09842d33d21cb746313f"
+              "sha256": "b0edab919ecd6149ce38f3c003282fcab1770c9941702770faa7717e36cf165b"
             },
             {
               "role": "owner",
@@ -17604,7 +17604,7 @@
             {
               "role": "entry",
               "path": "FanLab/LightSetter/Program.cs",
-              "sha256": "aa96595391e59d3820634a556814b76a5cd28356c1cf09842d33d21cb746313f"
+              "sha256": "b0edab919ecd6149ce38f3c003282fcab1770c9941702770faa7717e36cf165b"
             },
             {
               "role": "owner",
@@ -17795,7 +17795,7 @@
           "reason": "Retain the reviewed in-process MSI command-interface HID writer; exact model registration replaces family-only dispatch"
         }
       ],
-      "catalogSha256": "2adfaeeaf86c315f7defe45ebefadad359b2a510e6017e74993b0e81b6344b69"
+      "catalogSha256": "c91da8978b247199b602323f80994b7e38b76c53cf9216bbec21616a46eceaee"
     },
     "battery": {
       "schemaVersion": 1,

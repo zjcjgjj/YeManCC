@@ -3,7 +3,7 @@ using System;
 namespace YeManFanBackend.Capabilities;
 public static partial class HcLightingCapabilityCatalog
 {
-    public const string CatalogSha256 = "2adfaeeaf86c315f7defe45ebefadad359b2a510e6017e74993b0e81b6344b69";
+    public const string CatalogSha256 = "c91da8978b247199b602323f80994b7e38b76c53cf9216bbec21616a46eceaee";
     private static readonly LightingCapabilityDescriptor[] GeneratedRoutes = {
         new("hc.device.AOKZOEA1", true, false, HcSourceLedEffect.SolidColor | HcSourceLedEffect.Rainbow, false, false, false, false, false),
         new("hc.device.AOKZOEA1Pro", true, false, HcSourceLedEffect.SolidColor | HcSourceLedEffect.Rainbow, false, false, false, false, false),
