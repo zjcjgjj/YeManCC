@@ -25,7 +25,7 @@ import AppIcon from './AppIcon.vue';
 import { powerSourceMode } from '@/bridge/powerSource';
 import { subscribeMonitorTdpState } from '@/bridge/monitorAppliedTdp';
 import {
-  TDP_CEILING_FIRMWARE_W, knownTdpCeilingWatts, readTdpCeilingState,
+  TDP_CEILING_FIRMWARE_W, TDP_CEILING_STEPS, knownTdpCeilingWatts, readTdpCeilingState,
   type TdpCeilingState,
 } from '@/bridge/tdpCeiling';
 import { subscribePolicyGameStatus } from '@/bridge/gamePolicyTarget';
@@ -114,12 +114,16 @@ const powerScheme = computed(() => snapshot.value?.powerScheme ?? 'yeman');
 const cpuManaged = computed(() => draft.value?.mode !== 'manual' || powerScheme.value === 'yeman');
 const cpu = computed(() => draft.value ? automaticCpuControls(draft.value) : null);
 const minimumState = computed(() => draft.value ? manualCpuMinimum(draft.value) : 0);
-// 最大 TDP 档位：15–25W 是本机固件天花板可放开的区间（Intel ADL-P 出厂把 MCHBAR PL1
-// 钉在 15W，靠 bridge/tdpCeiling 的联动解除）。高于 25 的档位保留给其它机型，仍受
-// maximum（本机 PL1 请求域上限）过滤，不会出现在不支持的设备上。
-const TDP_CEILING_PRESETS = [15, 18, 20, 22, 25, 30, 45, 55, 120, 150];
-const ceilingOptions = computed(() => [...new Set([...TDP_CEILING_PRESETS, draft.value?.tdpCeiling || 25, maximum.value])]
-  .sort((a,b) => a-b).filter(v => v >= minimum.value && v <= maximum.value).map(value => ({value, label: `最大 ${value} W`})));
+// 最大 TDP 下拉：只在本机固件可放开的区间提供两档 —— 原厂 16W 与放开后的 25W
+// （Intel ADL-P 出厂把 MCHBAR PL1 钉在 15W，靠 bridge/tdpCeiling 的联动解除）。
+// 16–25W 之间的具体功率不在这里分档，交给左边的 TDP 滑块连续调整；
+// 旧版本可能存过 18/20/22 这类中间值，仍原样列出以免下拉空白，重新选择后即归一。
+const ceilingOptions = computed(() => {
+  const current = Math.round(Number(draft.value?.tdpCeiling) || 0);
+  return [...new Set([...TDP_CEILING_STEPS, ...(current > 0 ? [current] : [])])]
+    .filter(v => v >= minimum.value).sort((a, b) => a - b)
+    .map(value => ({value, label: `最大 ${value} W`}));
+});
 // 固件天花板提示：只读一次（6s 缓存），不参与任何保存/下发判定。
 const ceilingProbe = ref<TdpCeilingState | null>(null);
 async function refreshCeilingHint(): Promise<void> {
@@ -131,7 +135,7 @@ const ceilingNote = computed(() => {
   if (!p.ok) return `固件 ${TDP_CEILING_FIRMWARE_W} W 上限未解除：MMIO 驱动不可用，高于该值的 TDP 不会真正生效`;
   const w = Math.max(knownTdpCeilingWatts(), p.ceilingW);
   if (w <= TDP_CEILING_FIRMWARE_W) return '';
-  return `固件 ${TDP_CEILING_FIRMWARE_W} W 上限已放开至 ${w} W`;
+  return `固件 ${TDP_CEILING_FIRMWARE_W} W 上限已放开至 ${w} W，具体功耗由 TDP 滑块决定`;
 });
 const frameOptions = FRAME_RATE_CEILINGS.map(value => ({value, label: value === 0 ? '关闭锁帧' : `${value} FPS`}));
 const autoFrequency = computed(() => !cpu.value ? '' : cpu.value.maxMHz === 0 ? `${(cpu.value.minMHz/1000).toFixed(1)} GHz–不限` : `${(cpu.value.minMHz/1000).toFixed(1)}–${(cpu.value.maxMHz/1000).toFixed(1)} GHz`);

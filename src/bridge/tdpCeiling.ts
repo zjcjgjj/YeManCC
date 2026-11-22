@@ -27,8 +27,12 @@ import { shell } from './api';
 import { getPowerControlDir } from './yeman';
 import { getSettingsGeneration, readSettingsSection, saveSettingsSection } from './settingsRepository';
 
-/** 可选的档位。上限锁在 25W：用户明确要求"最高不要超过 25"。 */
-export const TDP_CEILING_STEPS = [15, 18, 20, 22, 25] as const;
+/**
+ * 「最大 TDP」下拉的档位：原厂 16W 与本机固件上限放开后的 25W。
+ * 15–25 之间的具体功率不在这里分档，由 TDP 滑块连续调整。
+ * 上限锁在 25W：用户明确要求"最高不要超过 25"。
+ */
+export const TDP_CEILING_STEPS = [16, 25] as const;
 export const TDP_CEILING_DEFAULT = 25;
 /** 硬上限。脚本侧还有一层 MAX_ALLOWED=30，这里更严，防止 UI 之外传入更大值。 */
 export const TDP_CEILING_HARD_MAX = 25;
@@ -64,10 +68,11 @@ export interface TdpCeilingState {
 }
 
 function clampWatts(value: unknown): number {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return TDP_CEILING_DEFAULT;
-  const stepped = TDP_CEILING_STEPS.find(w => w >= n) ?? TDP_CEILING_DEFAULT;
-  return Math.max(TDP_CEILING_STEPS[0], Math.min(TDP_CEILING_HARD_MAX, stepped));
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return TDP_CEILING_DEFAULT;
+  // 不吸附到固定档位：滑块/手柄给出 17、19、23 这类值时按原值作为上界，
+  // 只有越界才钳制到 [固件 15W, 硬上限 25W]。低于 15 不必干预，抬到 15 即可。
+  return Math.min(TDP_CEILING_HARD_MAX, Math.max(TDP_CEILING_FIRMWARE_W, Math.round(raw)));
 }
 
 export function normalizeTdpCeiling(raw: unknown): TdpCeilingConfig {
