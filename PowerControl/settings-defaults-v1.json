@@ -38,6 +38,7 @@
     "feedback": {
       "vibrationStrength": 70,
       "lighting": {
+        "configured": false,
         "enabled": false,
         "off": false,
         "mode": "solid",
@@ -90,6 +91,13 @@
     "autoApply": {
       "boot": true,
       "wake": true
+    },
+    "intelCeiling": {
+      "enabled": true,
+      "watts": 25,
+      "burstWatts": 25,
+      "hardMax": 25,
+      "configured": false
     }
   },
   "cpu": {
