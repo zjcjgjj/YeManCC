@@ -12870,6 +12870,11 @@ static constexpr uint64_t kOemBitCc = 1ull << 22, kOemBitAc = 1ull << 23, kOemBi
 static constexpr uint64_t kOemBitClaw = 1ull << 25, kOemBitQs = 1ull << 26;
 static constexpr uint64_t kOemBitCkBig = 1ull << 27, kOemBitCkSmall = 1ull << 28;
 static constexpr uint64_t kOemBitCkTl = 1ull << 29, kOemBitCkTr = 1ull << 30, kOemBitAyat = 1ull << 31;
+// YMCC-AIRPLUS-FIX: 最近一次**物理按下**的 AYANEO 专用键 OEM 位。抬起若被抑制/丢失，
+// physicalDown 会残留该 F 键，下一次按另一个专用键时两个 chord 子集同时成立：
+// 显示层同时亮多盏，动作层 currentMask==requiredMask 精确失配导致所有规则都不触发。
+// hook 在 keydown 边沿记录这里，chord 求值后据此收敛到最近按下的单一位。
+static std::atomic<uint64_t> g_ckRecentEdgeBit{0};
 static constexpr uint64_t kOemBitR4 = 1ull << 32, kOemBitL4 = 1ull << 33, kOemBitGamepad = 1ull << 34;
 static constexpr uint64_t kOemBitKeyboard = 1ull << 35, kOemBitHome = 1ull << 36;
 static constexpr uint64_t kOemBitLegionR = 1ull << 37, kOemBitLegionL = 1ull << 38;
@@ -14036,6 +14041,21 @@ static void oemChordEvalRules(int profileId, uint32_t kbDown, bool mouseChord, b
     if (outPrefixMask) *outPrefixMask = baseKeyMask ? (kbDown & ~baseKeyMask) : 0;
 }
 
+// YMCC-AIRPLUS-FIX: AYANEO 四键（ckbig/cksmall/cktl/cktr）在物理上互斥——
+// 同一时刻只会有一个被按下。固件 chord 各自携带 Ctrl/Win 前缀 + 不同的 F 键，
+// 一旦前一键的 F 位残留在按下集合里，子集匹配会让两个 chord 同时成立。
+// 出现多位时，只保留最近有物理 keydown 边沿的那一位；边沿信息缺失（如刚启动、
+// 或记录的是别的键）时保持原样，不凭空改写——避免误伤正常的组合/录制场景。
+static uint64_t oemCkDisambiguateAyaneo(uint64_t keyMask, uint64_t recentEdgeBit) {
+    static constexpr uint64_t kCkAll = kOemBitCkBig | kOemBitCkSmall | kOemBitCkTl | kOemBitCkTr;
+    const uint64_t ckHit = keyMask & kCkAll;
+    if (ckHit == 0 || (ckHit & (ckHit - 1)) == 0) return keyMask;  // 0 或 1 位：无需裁决
+    if (recentEdgeBit == 0 || (recentEdgeBit & kCkAll) == 0) return keyMask; // 无有效边沿
+    const uint64_t keep = recentEdgeBit & kCkAll & ckHit;
+    if (keep == 0 || (keep & (keep - 1)) != 0) return keyMask;     // 边沿不在命中集/多位
+    return (keyMask & ~kCkAll) | keep;
+}
+
 static void oemBackHookRecompute() {
     const int profileId = g_oemBackProfileId.load(std::memory_order_acquire);
     const bool mouseChord = g_oemMouseLeft && g_oemMouseX2;  // LButton+XButton2
@@ -14053,6 +14073,21 @@ static void oemBackHookRecompute() {
     uint32_t prefixMask = 0;
     oemChordEvalRules(profileId, kbDown, mouseChord, gpdIfaceReady,
                       &keyMask, &state, &physState, &baseKeyMask, &prefixMask);
+    // YMCC-AIRPLUS-FIX: AYANEO CEc/Air/KUN 等四键 profile 的专用键互斥裁决。
+    // 只在这些 profile 生效，其他品牌/机型的 chord 求值路径完全不变。
+    const int resolvedProfile = profileId;
+    if (resolvedProfile == static_cast<int>(OemChordProfileId::AyaneoCec) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::AyaneoAir) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::AyaneoKun) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::Ayaneo2021) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::AyaneoNext) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::AyaneoFlipDs) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::AyaneoFlip1S) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::AyaneoFlip1SKb) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::AyaneoNext2) ||
+        resolvedProfile == static_cast<int>(OemChordProfileId::Ayaneo3)) {
+        keyMask = oemCkDisambiguateAyaneo(keyMask, g_ckRecentEdgeBit.load(std::memory_order_acquire));
+    }
     modelAdaptationChord(profileId,kbDown,keyMask,mouseChord,physState); // POD-only unique adaptation witness.
     // GP-MSIG3E-2-R1（R4）：这里只发布**原始**键盘结果——不再把"按 MSI 权威过滤后的缓存"写进
     // 发布态：缓存会让来源切换/失效时出现 1→0→1 的假边沿（同一物理按压被当成第二次按下）。
@@ -14619,7 +14654,33 @@ static LRESULT CALLBACK oemBackHookProc(int nCode, WPARAM wParam, LPARAM lParam)
             }
             const auto desktopReceiptsBefore=g_desktopFunctionEdges.size();
             const bool desktopWasDown=state.physicalDown[slot];
-            state.physicalDown[slot] = (kb->flags & LLKHF_UP) == 0;
+            const bool physicalDownNow = (kb->flags & LLKHF_UP) == 0;
+            state.physicalDown[slot] = physicalDownNow;
+            // YMCC-AIRPLUS-FIX: 记录专用键的**物理按下**边沿，供 chord 多命中时裁决。
+            // 仅 AYANEO 家族 profile + F 键 + 真实 down 边沿（无重复、无注入、非抬起）时写。
+            if (physicalDownNow && !desktopWasDown) {
+                const int ckProfile = g_oemBackProfileId.load(std::memory_order_acquire);
+                const bool ckFamily = ckProfile == static_cast<int>(OemChordProfileId::AyaneoCec) ||
+                    ckProfile == static_cast<int>(OemChordProfileId::AyaneoAir) ||
+                    ckProfile == static_cast<int>(OemChordProfileId::AyaneoKun) ||
+                    ckProfile == static_cast<int>(OemChordProfileId::AyaneoNext) ||
+                    ckProfile == static_cast<int>(OemChordProfileId::AyaneoFlip1S) ||
+                    ckProfile == static_cast<int>(OemChordProfileId::AyaneoFlip1SKb) ||
+                    ckProfile == static_cast<int>(OemChordProfileId::AyaneoNext2) ||
+                    ckProfile == static_cast<int>(OemChordProfileId::Ayaneo3);
+                if (ckFamily) {
+                    const uint32_t vkBit = oemBackHookVkBit(kb->vkCode);
+                    const OemChordProfile& cp = oemChordProfileFor(ckProfile);
+                    for (int ci = 0; ci < cp.count; ++ci) {
+                        if ((cp.rules[ci].keys & vkBit) &&
+                            (cp.rules[ci].bit & (kOemBitCkBig|kOemBitCkSmall|kOemBitCkTl|kOemBitCkTr))) {
+                            g_ckRecentEdgeBit.store(cp.rules[ci].bit & (kOemBitCkBig|kOemBitCkSmall|kOemBitCkTl|kOemBitCkTr),
+                                                    std::memory_order_release);
+                            break;
+                        }
+                    }
+                }
+            }
             oemVirtualObserveDesktop(slot,state.physicalDown[slot],false);
             const bool desktopConsumed=nativeDesktopFunctionCapture(*kb,now,desktopWasDown);
             const bool chordPosted=nativeDesktopChordCapture(*kb,now,desktopWasDown);
@@ -106827,6 +106888,16 @@ static bool gpdChordSelfTest() {
       check("gpd-keyboard-unchanged", (km & kOemBitKeyboard)!=0);
       eval(kGpd, kVkWin|kVkD, true, &km,&st,&ph,&bk);
       check("gpd-home-unchanged", (km & kOemBitHome)!=0); }
+
+    // YMCC-AIRPLUS-FIX: AYANEO 专用键互斥裁决——多位命中只保留最近边沿那一位。
+    { const uint64_t aya=kOemBitCkBig, rc=kOemBitCkTr, lc=kOemBitCkTl;
+      check("ck-ambiguous-keeps-recent-edge",
+            oemCkDisambiguateAyaneo(aya|rc, rc)==rc && oemCkDisambiguateAyaneo(aya|rc, aya)==aya);
+      check("ck-single-untouched", oemCkDisambiguateAyaneo(aya, rc)==aya);
+      check("ck-no-edge-untouched", oemCkDisambiguateAyaneo(aya|lc, 0)==(aya|lc));
+      check("ck-edge-outside-hit-untouched", oemCkDisambiguateAyaneo(aya|lc, rc)==(aya|lc));
+      check("ck-nonck-bits-preserved",
+            oemCkDisambiguateAyaneo(aya|rc|kOemBitM1, rc)==(rc|kOemBitM1)); }
 
     // ── GP-BACKKEY-CAPABILITY-2 C4-R1（R1 缺口）：接口失效清态 ──
     // 驱动**真实生产** oemBackHookRecompute / gpdBackClose / oemBackMergedKeyMask /
