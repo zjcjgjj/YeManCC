@@ -88,6 +88,18 @@ static LRESULT CALLBACK gameOverlaySurfaceProc(HWND h,UINT m,WPARAM w,LPARAM l){
 }
 static bool gameOverlayMainPresented(HWND window){return IsWindowVisible(window)&&!IsIconic(window);}
 
+// 窗口类只需要注册一次：以前每次呼出都调 RegisterClassExW，除第一次外都返回
+// ERROR_CLASS_ALREADY_EXISTS，等于每次呼出白跑一次 user32 调用。这里只缓存
+// "注册成功"，失败仍逐次重试——一次瞬时失败不能让浮层从此打不开。
+static bool gameOverlaySurfaceClassReady() noexcept {
+    static std::atomic<bool> ready{false};
+    if(ready.load(std::memory_order_acquire))return true;
+    WNDCLASSEXW cls{sizeof(cls)};cls.lpfnWndProc=gameOverlaySurfaceProc;cls.hInstance=GetModuleHandleW(nullptr);cls.lpszClassName=L"YMCC_IndependentOverlaySurface";
+    if(!RegisterClassExW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
+    ready.store(true,std::memory_order_release);
+    return true;
+}
+
 static bool gameOverlaySurfaceShow(const FocusTargetSnapshot& target,ymcc::gameoverlay::Binding binding,bool observation,std::function<void()> ended={},bool maximize=false){
   try{
     const HWND foregroundAtEntry=GetAncestor(GetForegroundWindow(),GA_ROOT);
@@ -100,8 +112,8 @@ static bool gameOverlaySurfaceShow(const FocusTargetSnapshot& target,ymcc::gameo
     if(g_gameOverlaySurface&&!gameOverlaySurfaceRestore())return false;
     binding.detachedPointer=true;
     const auto returnBinding=std::make_shared<const ymcc::gameoverlay::Binding>(binding);
-    WNDCLASSEXW cls{sizeof(cls)};cls.lpfnWndProc=gameOverlaySurfaceProc;cls.hInstance=GetModuleHandleW(nullptr);cls.lpszClassName=L"YMCC_IndependentOverlaySurface";
-    if(!RegisterClassExW(&cls)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
+    if(!gameOverlaySurfaceClassReady())return false;
+    const HINSTANCE instance=GetModuleHandleW(nullptr);
     RECT base{};
     if(IsIconic(g_hwnd)){
         WINDOWPLACEMENT saved{sizeof(saved)};
@@ -109,7 +121,7 @@ static bool gameOverlaySurfaceShow(const FocusTargetSnapshot& target,ymcc::gameo
         base=saved.rcNormalPosition; // GetWindowRect on an iconic HWND is not its restore size.
     }else if(!GetWindowRect(g_hwnd,&base))return false;
     if(base.right<=base.left||base.bottom<=base.top)return false;
-    HWND display=CreateWindowExW(static_cast<DWORD>(ymcc::hudinput::requiredExStyle)|WS_EX_TOPMOST|WS_EX_NOREDIRECTIONBITMAP,cls.lpszClassName,L"YeManCC Overlay",WS_POPUP|WS_DISABLED,base.left,base.top,base.right-base.left,base.bottom-base.top,nullptr,nullptr,cls.hInstance,nullptr);
+    HWND display=CreateWindowExW(static_cast<DWORD>(ymcc::hudinput::requiredExStyle)|WS_EX_TOPMOST|WS_EX_NOREDIRECTIONBITMAP,L"YMCC_IndependentOverlaySurface",L"YeManCC Overlay",WS_POPUP|WS_DISABLED,base.left,base.top,base.right-base.left,base.bottom-base.top,nullptr,nullptr,instance,nullptr);
     if(!display)return false;
     // 对捕获 API 隐身：小黄鸭（Lossless Scaling）按桌面层取帧整屏缩放时拿不到这个
     // 浮层，缩放只作用于游戏画面，面板保持原分辨率。失败不阻断呈现，只记录。

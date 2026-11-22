@@ -26,7 +26,7 @@ import { powerSourceMode } from '@/bridge/powerSource';
 import { subscribeMonitorTdpState } from '@/bridge/monitorAppliedTdp';
 import {
   TDP_CEILING_FIRMWARE_W, TDP_CEILING_HARD_MAX, TDP_CEILING_STEPS, knownTdpCeilingWatts,
-  readTdpCeilingConfig, readTdpCeilingState, saveTdpCeilingConfig,
+  readTdpCeilingState, saveTdpCeilingConfig,
   type TdpCeilingState,
 } from '@/bridge/tdpCeiling';
 import { subscribePolicyGameStatus } from '@/bridge/gamePolicyTarget';
@@ -92,6 +92,7 @@ const note = ref(''), saving = ref(false), editSide = ref<ControlSide | null>(nu
 // may update the saved identity, but must not replace a newer slider draft.
 let epoch = 0, readEpoch = 0, draftRevision = 0, alive = true;
 let pending: ContinuousSidePatch | null = null;
+let ceilingHintTimer = 0;
 let editingInput: HTMLInputElement | null = null, refreshPending = false, contextInvalidated = false;
 const performanceSliderRepeat = { accelerate: true, repeatIntervalMs: EDIT_REPEAT_BASE_MS };
 const stops: (() => void)[] = [];
@@ -208,10 +209,13 @@ async function persistCeilingWatts(watts: number): Promise<void> {
   const target = Math.max(0, Math.min(TDP_CEILING_HARD_MAX, Math.round(watts)));
   if (!Number.isFinite(target) || target < 2) return;
   try {
-    const current = await readTdpCeilingConfig();
+    // saveTdpCeilingConfig 自己会读一遍现有 tdp 段再合并写入，这里不必先读：
+    // 它只会覆盖 intelCeiling 一项，enabled 由 normalizeTdpCeiling 按 true 补齐。
+    // 少一次设置读取（一次 IPC），并发改值时也少一个"读旧值再覆盖"的窗口。
     await saveTdpCeilingConfig({
-      ...current, enabled: true, watts: target,
+      enabled: true, watts: target,
       burstWatts: Math.min(TDP_CEILING_HARD_MAX, Math.max(target, target + 5)),
+      hardMax: TDP_CEILING_HARD_MAX,
     });
   } catch { /* 持久化失败不能拦住这次下发 */ }
 }
@@ -219,9 +223,12 @@ async function commit(patch: ContinuousSidePatch) {
   if (props.summaryOnly || props.readonlyPreview || contextInvalidated || (!cpuManaged.value && (patch.manual || patch.auto))) return;
   if (removalBusy.value || !snapshot.value?.side || !draft.value) return;
   // 天花板在滑块值真正下发后才会变，稍等再读，避免读到上一次的状态。
+  // 连点下拉时只保留最后一次：合并成一次读回，避免多个 1.5s 定时器各起一次
+  // PowerShell 状态查询。
   if ('tdpCeiling' in patch) {
     void persistCeilingWatts(Number(patch.tdpCeiling));
-    window.setTimeout(() => { if (alive) void refreshCeilingHint(); }, 1500);
+    if (ceilingHintTimer) window.clearTimeout(ceilingHintTimer);
+    ceilingHintTimer = window.setTimeout(() => { ceilingHintTimer = 0; if (alive) void refreshCeilingHint(); }, 1500);
   }
   const { powerScheme: scheme, ...bankPatch } = patch;
   if (scheme) snapshot.value = { ...snapshot.value, powerScheme: scheme };
@@ -294,7 +301,7 @@ onMounted(() => {
   void load();
   void refreshCeilingHint();
 });
-onBeforeUnmount(() => { invalidateDraft(); alive = false; epoch++; pending = null; for (const stop of stops) stop(); });
+onBeforeUnmount(() => { invalidateDraft(); alive = false; epoch++; pending = null; if (ceilingHintTimer) window.clearTimeout(ceilingHintTimer); for (const stop of stops) stop(); });
 defineExpose({ reload: () => load(true) });
 </script>
 
