@@ -256,6 +256,9 @@ const DEFAULTS: UnifiedSettings = {
     fpsLimit: 120,
     float: { target: 120, profile: 'none', tdpStrategy: 'none' },
     autoApply: { boot: true, wake: true },
+    // Intel MCHBAR 天花板：固件把 MCHBAR PL1 钉在 15W，仅写 MSR 会被 min() 压住。
+    // 默认开启并锁 25W —— 游戏时最高不超过 25W；非 Intel 平台脚本会自行退出。
+    intelCeiling: { enabled: true, watts: 25, burstWatts: 25, hardMax: 25, configured: false },
   },
   cpu: {
     profiles: {},

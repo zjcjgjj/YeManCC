@@ -83,6 +83,7 @@ import { createPowerResumeQueue, runPowerResumeTransaction } from '@/bridge/powe
 import { readSettingsSection, saveSettingsSection } from '@/bridge/settingsRepository';
 import { isUiVisible, onUiVisibilityChange, setNativeWindowVisible, startUiPowerReconciliation } from '@/bridge/uiLifecycle';
 import { syncLightingFromSettings } from '@/bridge/startupLightingSync';
+import { syncTdpCeilingOnStartup, TDP_CEILING_FIRMWARE_W } from '@/bridge/tdpCeiling';
 import { onSharedPowerLifecycle, getSharedPowerLifecycle, requestSharedPowerLifecycleReadyConfirmation, isSharedPowerLifecycleAdmitted, type SharedPowerLifecycleSnapshot } from '@/bridge/powerLifecycleState';
 import { rememberPowerSourceMode, onPowerSourceNotification, startForegroundPowerSourceRefresh } from '@/bridge/powerSource';
 import { tdpRuntimeStore } from '@/bridge/tdpRuntimeState';
@@ -123,6 +124,7 @@ let stopSharedFanWakeWatch: (() => void) | null = null;
 const startupSyncNotice = ref<{ text: string; tone: 'ok' | 'warn' } | null>(null);
 let startupLightingSyncTimer: number | null = null;
 let startupSyncNoticeTimer: number | null = null;
+let startupTdpCeilingTimer: number | null = null;
 const startupSyncModeLabels: Record<string, string> = {
   solid: '常亮', breathing: '呼吸', rainbow: '彩虹', wheel: 'Wheel', ambilight: '氛围', gradient: '渐变', preset: '预设',
 };
@@ -156,6 +158,22 @@ async function runStartupLightingSync(): Promise<void> {
   const brightness = result.brightness ?? 0;
   const suffix = brightness > 0 ? `${mode} · 亮度 ${brightness}%` : '关闭（亮度 0）';
   showStartupSyncNotice(`已按面板设置同步灯光：${suffix}${result.splitRings ? '（左环主色 / 右环副色）' : ''}`, 'ok');
+}
+// ── 启动 TDP 天花板（bridge/tdpCeiling.ts）──
+// Intel 机型固件把 MCHBAR+0x59A0 的 PL1 钉在 15W，重启后会还原；面板里 15W 以上的
+// 「最大 TDP」因此需要每次启动重新放开。失败只提示，不阻断界面。
+async function runStartupTdpCeiling(): Promise<void> {
+  try {
+    const result = await syncTdpCeilingOnStartup();
+    if (!result) return;
+    if (result.ok) {
+      if (result.ceilingW > TDP_CEILING_FIRMWARE_W)
+        showStartupSyncNotice(`TDP 固件上限已放开至 ${result.ceilingW} W`, 'ok');
+      return;
+    }
+    if (result.status === 'unsupported' || result.status === 'disabled') return;
+    showStartupSyncNotice(`TDP 固件上限未能放开（仍为 ${TDP_CEILING_FIRMWARE_W} W）：${result.reason ?? '未知原因'}`, 'warn');
+  } catch { /* 启动链路不允许抛异常 */ }
 }
 
 const BOOT_TASK = BOOT_CONTROL_CENTER_TASK;
@@ -2327,6 +2345,14 @@ onMounted(async () => {
   }
   // ── 开机启动自愈：若用户曾开启但计划任务被误删，自动重建 ──
   if (!aiCpuIsolated) healBootTask().catch(() => {});
+  // ── TDP 天花板：固件重启后还原 15W，这里按面板保存的「最大 TDP」重新放开 ──
+  // 排在灯光之后 1.5s：让 TDP/风扇初始化先跑完，避免同时抢驱动加载。
+  if (!aiCpuIsolated) {
+    startupTdpCeilingTimer = window.setTimeout(() => {
+      startupTdpCeilingTimer = null;
+      void runStartupTdpCeiling();
+    }, 1500);
+  }
 
   // Preserve sleep power-plan optimization independently of retired CPU controls.
   if (!aiCpuIsolated) sleepPlanOptimizationTimer = window.setTimeout(() => {
@@ -2344,6 +2370,7 @@ onMounted(async () => {
 onUnmounted(() => {
   backgroundPresentationDisposed = true;
   if (startupLightingSyncTimer !== null) { window.clearTimeout(startupLightingSyncTimer); startupLightingSyncTimer = null; }
+  if (startupTdpCeilingTimer !== null) { window.clearTimeout(startupTdpCeilingTimer); startupTdpCeilingTimer = null; }
   dismissStartupSyncNotice();
   stopUndervoltRuntime();
   cancelBootModeLaunches();

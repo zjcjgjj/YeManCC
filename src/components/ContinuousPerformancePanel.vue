@@ -24,6 +24,10 @@ import Dropdown from './Dropdown.vue';
 import AppIcon from './AppIcon.vue';
 import { powerSourceMode } from '@/bridge/powerSource';
 import { subscribeMonitorTdpState } from '@/bridge/monitorAppliedTdp';
+import {
+  TDP_CEILING_FIRMWARE_W, knownTdpCeilingWatts, readTdpCeilingState,
+  type TdpCeilingState,
+} from '@/bridge/tdpCeiling';
 import { subscribePolicyGameStatus } from '@/bridge/gamePolicyTarget';
 import { getContinuousPerformanceSnapshot, updateContinuousPerformanceControls,
   loadGameCustomConfig, removeGameCustomProfile, restorePerformanceScheduleIfConfigured,
@@ -110,8 +114,25 @@ const powerScheme = computed(() => snapshot.value?.powerScheme ?? 'yeman');
 const cpuManaged = computed(() => draft.value?.mode !== 'manual' || powerScheme.value === 'yeman');
 const cpu = computed(() => draft.value ? automaticCpuControls(draft.value) : null);
 const minimumState = computed(() => draft.value ? manualCpuMinimum(draft.value) : 0);
-const ceilingOptions = computed(() => [...new Set([16, 30, 45, 55, 120, 150, draft.value?.tdpCeiling || 45, maximum.value])]
+// 最大 TDP 档位：15–25W 是本机固件天花板可放开的区间（Intel ADL-P 出厂把 MCHBAR PL1
+// 钉在 15W，靠 bridge/tdpCeiling 的联动解除）。高于 25 的档位保留给其它机型，仍受
+// maximum（本机 PL1 请求域上限）过滤，不会出现在不支持的设备上。
+const TDP_CEILING_PRESETS = [15, 18, 20, 22, 25, 30, 45, 55, 120, 150];
+const ceilingOptions = computed(() => [...new Set([...TDP_CEILING_PRESETS, draft.value?.tdpCeiling || 25, maximum.value])]
   .sort((a,b) => a-b).filter(v => v >= minimum.value && v <= maximum.value).map(value => ({value, label: `最大 ${value} W`})));
+// 固件天花板提示：只读一次（6s 缓存），不参与任何保存/下发判定。
+const ceilingProbe = ref<TdpCeilingState | null>(null);
+async function refreshCeilingHint(): Promise<void> {
+  try { ceilingProbe.value = await readTdpCeilingState(); } catch { ceilingProbe.value = null; }
+}
+const ceilingNote = computed(() => {
+  const p = ceilingProbe.value;
+  if (!p || p.status === 'unsupported' || p.status === 'disabled') return '';
+  if (!p.ok) return `固件 ${TDP_CEILING_FIRMWARE_W} W 上限未解除：MMIO 驱动不可用，高于该值的 TDP 不会真正生效`;
+  const w = Math.max(knownTdpCeilingWatts(), p.ceilingW);
+  if (w <= TDP_CEILING_FIRMWARE_W) return '';
+  return `固件 ${TDP_CEILING_FIRMWARE_W} W 上限已放开至 ${w} W`;
+});
 const frameOptions = FRAME_RATE_CEILINGS.map(value => ({value, label: value === 0 ? '关闭锁帧' : `${value} FPS`}));
 const autoFrequency = computed(() => !cpu.value ? '' : cpu.value.maxMHz === 0 ? `${(cpu.value.minMHz/1000).toFixed(1)} GHz–不限` : `${(cpu.value.minMHz/1000).toFixed(1)}–${(cpu.value.maxMHz/1000).toFixed(1)} GHz`);
 function merge(a: ContinuousSidePatch | null, b: ContinuousSidePatch): ContinuousSidePatch {
@@ -178,6 +199,8 @@ function changeFrame(value: number) {
 async function commit(patch: ContinuousSidePatch) {
   if (props.summaryOnly || props.readonlyPreview || contextInvalidated || (!cpuManaged.value && (patch.manual || patch.auto))) return;
   if (removalBusy.value || !snapshot.value?.side || !draft.value) return;
+  // 天花板在滑块值真正下发后才会变，稍等再读，避免读到上一次的状态。
+  if ('tdpCeiling' in patch) window.setTimeout(() => { if (alive) void refreshCeilingHint(); }, 1500);
   const { powerScheme: scheme, ...bankPatch } = patch;
   if (scheme) snapshot.value = { ...snapshot.value, powerScheme: scheme };
   if (Object.keys(bankPatch).length) change(bankPatch);
@@ -247,6 +270,7 @@ onMounted(() => {
   }), onPerformanceScheduleChanged(() => { void load(false, true); }),
     onGameCustomConfigChanged(() => { void load(false, true); }), onFrameRatesChanged(() => { void load(); }));
   void load();
+  void refreshCeilingHint();
 });
 onBeforeUnmount(() => { invalidateDraft(); alive = false; epoch++; pending = null; for (const stop of stops) stop(); });
 defineExpose({ reload: () => load(true) });
@@ -291,6 +315,7 @@ defineExpose({ reload: () => load(true) });
           <div class="range-body"><Slider :key="'fps-'+powerScheme" class="bare-slider" :model-value="frame.fps" :min="frame.fps === 0 ? 0 : 15" :max="frame.ceiling || 15" :step="5" v-bind="performanceSliderRepeat" :disabled="frame.fps===0" label="目标帧率" :color="color" :gp-row="3" :gp-col="0" @update:model-value="changeFrame" @commit="() => frame && saveFrame(frame)" /><div class="range-ends" aria-hidden="true"><span>15 FPS</span><span>{{frame.ceiling || 15}} FPS</span></div></div>
           <Dropdown :model-value="frame.ceiling" :options="frameOptions" :color="color" aria-label="帧率上限" :gp-row="3" :gp-col="1" @update:model-value="frameCeiling" />
         </div>
+        <p v-if="!summaryOnly && ceilingNote" class="ceiling-note">{{ ceilingNote }}</p>
       </div>
       <div v-if="draft.mode === 'auto'" class="control-bubble auto-bubble">
         <div class="saving-section">
@@ -351,7 +376,8 @@ defineExpose({ reload: () => load(true) });
 .continuous-performance :deep(.slider){padding:0;min-width:0}.continuous-performance :deep(.slider-track-wrap){height:var(--performance-track-h)}.bare-slider :deep(.slider-head){display:none}.slider-dropdown-row :deep(.dd-trigger){height:var(--performance-control-h);min-height:var(--performance-control-h);padding-block:calc(6 * var(--performance-space))}.continuous-performance :deep(input[type=range]){height:var(--performance-track-h)}.continuous-performance :deep(.slider-track-bg),.continuous-performance :deep(.slider-fill){height:5px}.continuous-performance :deep(input[type=range]::-webkit-slider-thumb){width:18px;height:18px;border:2px solid var(--surface,#171d27);background:var(--control-thumb);box-shadow:0 0 0 2px var(--control-thumb-ring)}
 .auto-bubble{padding:calc(12 * var(--performance-space)) 12px}.saving-section{padding-bottom:calc(12 * var(--performance-space));border-bottom:1px solid var(--border)}.saving-ticks{display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);padding-top:calc(3 * var(--performance-space))}.bias-section{padding:calc(14 * var(--performance-space)) 0 calc(24 * var(--performance-space));border-bottom:1px solid var(--border)}.bias-labels{display:flex;justify-content:space-between;color:var(--control-accent);margin-bottom:calc(6 * var(--performance-space))}.bias-labels span:first-child{color:#b4a0ed}.bias-labels span:last-child{color:#63cfca}.bias-slider,.core-slider{--control-thumb:var(--text);--control-thumb-ring:var(--text-dim)}.bias-slider :deep(.slider-fill){display:none}.bias-slider :deep(.slider-track-bg){background:linear-gradient(90deg,#ac96e8,#50c8bf);border:0}.bias-ticks{display:flex;justify-content:space-between;height:calc(22 * var(--performance-space));margin-top:calc(2 * var(--performance-space))}.bias-ticks>span{position:relative;width:1px;height:6px;background:var(--text-muted,#778c99)}.bias-ticks>span.major{height:10px}.bias-ticks small{position:absolute;top:calc(12 * var(--performance-space));left:50%;transform:translateX(-50%);font-size:10px;color:var(--text-secondary)}.bias-ticks>span:first-child small{transform:none}.bias-ticks>span:last-child small{transform:translateX(-100%)}
 .core-section{padding-top:calc(12 * var(--performance-space))}.core-heading{display:flex;justify-content:space-between;align-items:center;color:var(--text-secondary)}.core-heading b{color:var(--text);font-size:21px}.core-heading small{font-size:11px;font-weight:400}.core-topology{display:flex;justify-content:space-between;gap:8px;margin:calc(8 * var(--performance-space)) 0 calc(2 * var(--performance-space));flex-wrap:wrap;font-size:12px;color:var(--text-secondary)}.core-slider :deep(.slider-fill){display:none}.core-slider :deep(.slider-track-bg){background:linear-gradient(90deg,#5ed2c4 0 var(--core-split),#b6a1ef var(--core-split) 100%);border:0}.auto-core-row{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px;align-items:end;margin-top:calc(6 * var(--performance-space))}.core-choice{display:grid;gap:calc(6 * var(--performance-space));min-width:0}.core-choice>small{font-size:11px;color:var(--text-secondary);white-space:nowrap}.auto-core-row :deep(.dd-trigger){height:var(--performance-control-h);min-height:var(--performance-control-h);padding-block:calc(6 * var(--performance-space))}.smt-control{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;min-height:var(--performance-control-h)}.smt-control>span,.smt-control>b{font-size:inherit;white-space:nowrap}.smt-button{width:100%;font-size:12px;padding-inline:8px}.manual-actions-grid>.smt-button:last-child:nth-child(odd){grid-column:1/-1}.core-section.unavailable .core-heading,.core-section.unavailable .core-topology{opacity:.45}
-.manual-sliders{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:end}.manual-frequency-heading{display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);gap:5px;margin-bottom:6px}.manual-frequency-heading>span:first-child{display:none}.manual-actions-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:calc(8 * var(--performance-space)) 8px;align-items:stretch;margin-top:calc(12 * var(--performance-space))}.manual-actions-grid>*{width:100%;min-width:0;min-height:var(--performance-control-h)}.manual-actions-grid .toggle{display:flex;align-items:center;justify-content:space-between;gap:8px}.manual-actions-grid :deep(.dd-trigger){height:var(--performance-control-h);min-height:var(--performance-control-h);padding-block:calc(6 * var(--performance-space))}.continuous-performance :deep(.core-active .dd-trigger:disabled){opacity:.4;filter:saturate(.1)}button:disabled{opacity:.4;cursor:default}.save-note:empty{display:none}.save-note{min-height:calc(16 * var(--performance-space));margin:0;font-size:11px;color:var(--text-secondary,#b7bec7)}button:focus-visible{outline:2px solid var(--control-accent);outline-offset:3px}
+.manual-sliders{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:end}.manual-frequency-heading{display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);gap:5px;margin-bottom:6px}.manual-frequency-heading>span:first-child{display:none}.manual-actions-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:calc(8 * var(--performance-space)) 8px;align-items:stretch;margin-top:calc(12 * var(--performance-space))}.manual-actions-grid>*{width:100%;min-width:0;min-height:var(--performance-control-h)}.manual-actions-grid .toggle{display:flex;align-items:center;justify-content:space-between;gap:8px}.manual-actions-grid :deep(.dd-trigger){height:var(--performance-control-h);min-height:var(--performance-control-h);padding-block:calc(6 * var(--performance-space))}.continuous-performance :deep(.core-active .dd-trigger:disabled){opacity:.4;filter:saturate(.1)}button:disabled{opacity:.4;cursor:default}.save-note:empty{display:none}.save-note{min-height:calc(16 * var(--performance-space));margin:0;font-size:11px;color:var(--text-secondary,#b7bec7)}
+.ceiling-note{margin:0;padding:0 0 calc(10 * var(--performance-space));font-size:11px;line-height:1.4;color:var(--text-muted,#99a1ad)}button:focus-visible{outline:2px solid var(--control-accent);outline-offset:3px}
 .performance-compact :deep(.slider-head){margin-bottom:calc(8 * var(--performance-space))}
 .profile-delete{min-height:34px;padding:5px 12px;border:1px solid color-mix(in srgb,var(--danger) 50%,transparent);border-radius:7px;background:color-mix(in srgb,var(--danger) 12%,var(--bg-input));color:var(--danger);font:inherit;font-size:13px;font-weight:650;white-space:nowrap;cursor:pointer}.profile-delete:disabled{opacity:.5}
 </style>

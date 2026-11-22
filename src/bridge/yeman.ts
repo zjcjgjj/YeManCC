@@ -1577,6 +1577,13 @@ async function setTdpObservedCore(
       return false; // A completed old write cannot acknowledge the current owner.
     }
     if (!acknowledged) { tdpRuntimeStore.finishUnknown(receipt); return false; }
+    // Intel 机型（如 AYANEO AIR PLUS / i3-1215U）固件把 MCHBAR+0x59A0 的 PL1 钉在
+    // 15W，PCODE 对 MSR 0x610 与该寄存器取 min()。这里刚写完 MSR，若不下发天花板，
+    // 面板里 15W 以上的设定会被固件上限压回。只升不降、失败静默、非 Intel 自动跳过：
+    // 它只影响"下发值能否真正生效"，绝不把一次成功的 MSR 写变成失败。
+    if (acceptedW > 15) {
+      void import('./tdpCeiling').then(m => m.ensureTdpCeilingAtLeast(acceptedW)).catch(() => { /* 降级为不干预 */ });
+    }
     tdpRuntimeStore.finish(receipt, true, acceptedW);
     try { opts.onAccepted?.(acceptedW); } catch { /* consumer cannot turn a backend receipt into a failed write */ }
     return true;

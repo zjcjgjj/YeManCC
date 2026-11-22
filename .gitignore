@@ -164,3 +164,8 @@ deps/ymcc-device-core-runtime/bin/*
 
 # Local fixture evidence is not release source.
 /--help/
+
+# 本地构建产物（vite --outDir 临时目录）
+/.ymcc-build-*/
+# 内核驱动副本：运行时由脚本从已授权来源部署，不入库
+/PowerControl/mmio/*.sys
