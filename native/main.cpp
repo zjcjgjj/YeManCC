@@ -60493,93 +60493,6 @@ static bool nativeScreenStandaloneSubmit(ymcc::screenpads::StandaloneAction acti
         {"action",static_cast<int>(action)},{"queueAccepted",queued},{"signal","none"},{"virtual",false}});
     return queued;
 }
-// ── 面板接管前台（键盘只归面板）─────────────────────────────────────────────
-// 覆盖层是 WS_EX_NOACTIVATE：前台始终是游戏，键盘焦点也在游戏手里，于是方向键、
-// 空格会同时驱动面板和游戏（"呼出面板角色还在动"）。这里在浮层呈现后把前台交给
-// 浮层本身，键盘整段落给面板；收回时把前台还给原来的游戏窗口。
-// 只在非独占全屏（FSE）时启用：FSE 下抢前台会把游戏切出去，破坏比漏键更大。
-// 开关 = ui.overlayKeyboardTakeover（默认开），关掉即恢复原来的纯 NOACTIVATE 语义。
-// 生命周期严格等于一次浮层呈现：acquire 只在 begun 之后调用一次，release 在
-// gameOverlaySurfaceRestore 的第一句执行，任何收回路径（含异常）都会经过它。
-static std::atomic<bool> g_gameOverlayKeyboardLease{false};
-static std::atomic<std::uintptr_t> g_gameOverlayKeyboardLeaseTarget{0};
-// 开关跟随既有的「呼出隔离」：那个开关的语义本来就是"YMCC 呼出时隔离后台输入"，
-// 键盘和手柄同属一层所有权，不该再拆出第三个开关。ui.overlayKeyboardTakeover
-// 只在需要单独关掉抢前台（例如某个游戏在全屏下受不了失焦）时写 false。
-static bool gameOverlayKeyboardTakeoverEnabled() {
-    const auto value = ymSettingsField("ui", "overlayKeyboardTakeover");
-    if (value.is_boolean() && !value.get<bool>()) return false;
-    return g_controllerFrontendIsolationEnabled.load(std::memory_order_acquire);
-}
-static void gameOverlayKeyboardLeaseStyle(HWND surface, bool activatable) {
-    if (!surface || !IsWindow(surface)) return;
-    const LONG_PTR style = GetWindowLongPtrW(surface, GWL_EXSTYLE);
-    const LONG_PTR desired = activatable ? (style & ~static_cast<LONG_PTR>(WS_EX_NOACTIVATE))
-                                         : (style | static_cast<LONG_PTR>(WS_EX_NOACTIVATE));
-    if (style != desired) SetWindowLongPtrW(surface, GWL_EXSTYLE, desired);
-}
-static void gameOverlayKeyboardLeaseAcquire(HWND surface, HWND target) {
-    if (g_gameOverlayKeyboardLease.load(std::memory_order_acquire)) return;
-    bool fse = false;
-    try { const auto platform = ymcc::bootmode::readPlatform();
-        fse = platform.activeKnown && platform.active; } catch (...) { fse = false; }
-    // 独占 D3D 全屏是真正会被"切出去"的那种：无边框全屏抢前台没有副作用，
-    // 但独占全屏一旦失去前台会被最小化，游戏等于被打断。只在这一种情况下跳过。
-    QUERY_USER_NOTIFICATION_STATE notification = QUNS_NOT_PRESENT;
-    const bool d3dFullscreen = SUCCEEDED(SHQueryUserNotificationState(&notification)) &&
-        notification == QUNS_RUNNING_D3D_FULL_SCREEN;
-    const char* skip = nullptr;
-    if (!gameOverlayKeyboardTakeoverEnabled()) skip = "takeover-disabled";
-    else if (!surface || !IsWindow(surface)) skip = "surface-unavailable";
-    else if (!target || !IsWindow(target)) skip = "target-unavailable";
-    else if (fse) skip = "gaming-fullscreen-experience";
-    else if (d3dFullscreen) skip = "exclusive-d3d-fullscreen";
-    if (skip) {
-        appendNativeLifecycleLog("game-overlay-keyboard-lease", {{"phase", "skipped"}, {"reason", skip},
-            {"surface", reinterpret_cast<std::uintptr_t>(surface)}, {"target", reinterpret_cast<std::uintptr_t>(target)},
-            {"fse", fse}, {"d3dFullscreen", d3dFullscreen}, {"keyboardScope", "panel-only"},
-            {"screenVisibleVerified", false}});
-        return;
-    }
-    // 先让窗口可激活，再抢前台：NOACTIVATE 的窗口即使用 SetForegroundWindow 也
-    // 拿不到键盘焦点，所以这两步必须成对。抢不到就整体回退，绝不留"半接管"。
-    // 与 refocusWebView 同一套顺序（BringWindowToTop → SetForegroundWindow →
-    // SetActiveWindow → SetFocus），但**不** AttachThreadInput：前台游戏可能在
-    // 唤醒后挂死，共享它的输入队列会拖住 YMCC 自己的消息泵。
-    gameOverlayKeyboardLeaseStyle(surface, true);
-    if (!IsWindowEnabled(surface)) EnableWindow(surface, TRUE);
-    BringWindowToTop(surface);
-    const bool foreground = SetForegroundWindow(surface) != FALSE;
-    SetActiveWindow(surface);
-    SetFocus(surface);
-    const HWND current = GetForegroundWindow();
-    if (!foreground || current != surface) {
-        gameOverlayKeyboardLeaseStyle(surface, false);
-        appendNativeLifecycleLog("game-overlay-keyboard-lease", {{"phase", "refused"},
-            {"reason", "foreground-not-acquired"}, {"setForeground", foreground},
-            {"foreground", reinterpret_cast<std::uintptr_t>(current)},
-            {"surface", reinterpret_cast<std::uintptr_t>(surface)}, {"fse", fse},
-            {"screenVisibleVerified", false}});
-        return;
-    }
-    g_gameOverlayKeyboardLeaseTarget.store(reinterpret_cast<std::uintptr_t>(target), std::memory_order_release);
-    g_gameOverlayKeyboardLease.store(true, std::memory_order_release);
-    appendNativeLifecycleLog("game-overlay-keyboard-lease", {{"phase", "acquired"},
-        {"surface", reinterpret_cast<std::uintptr_t>(surface)}, {"target", reinterpret_cast<std::uintptr_t>(target)},
-        {"foreground", reinterpret_cast<std::uintptr_t>(current)}, {"fse", fse},
-        {"keyboardScope", "panel-only"}, {"scope", "foreground-lease;no-keyboard-hook;no-device-change"},
-        {"screenVisibleVerified", false}});
-}
-static void gameOverlayKeyboardLeaseRelease() {
-    if (!g_gameOverlayKeyboardLease.exchange(false, std::memory_order_acq_rel)) return;
-    const auto target = reinterpret_cast<HWND>(g_gameOverlayKeyboardLeaseTarget.exchange(0, std::memory_order_acq_rel));
-    const HWND surface = g_gameOverlaySurface;
-    const bool returned = target && IsWindow(target) ? SetForegroundWindow(target) != FALSE : false;
-    gameOverlayKeyboardLeaseStyle(surface, false);
-    appendNativeLifecycleLog("game-overlay-keyboard-lease", {{"phase", "released"},
-        {"surface", reinterpret_cast<std::uintptr_t>(surface)}, {"target", reinterpret_cast<std::uintptr_t>(target)},
-        {"foregroundReturned", returned}, {"keyboardScope", "panel-only"}, {"screenVisibleVerified", false}});
-}
 // Private candidate: the original accepted summon is the only entry.
 // A diagnostic readback may veto this candidate; it never enables a driver,
 // creates a target or certifies downstream physical suppression.
@@ -60613,12 +60526,8 @@ static bool gameOverlayInputEligible() {
     const auto b=g_gameOverlay.snapshot();if(!b)return false;
     if(b->originalUiInput){
         const auto foreground=GetForegroundWindow();
-        // 接管前台期间前台就是浮层自己：此时游戏仍在后台稳定渲染，面板才是
-        // 真正的输入所有者，所以"前台 == 本会话浮层"与"前台 == 目标窗口"等价。
-        const bool leased=g_gameOverlayKeyboardLease.load(std::memory_order_acquire)&&
-            foreground&&foreground==g_gameOverlaySurface;
         const bool current=gameOverlayBindingCurrent(*b)&&foreground&&
-            (b->globalProbe||GetAncestor(foreground,GA_ROOT)==b->target||leased);
+            (b->globalProbe||GetAncestor(foreground,GA_ROOT)==b->target);
         if(!current)g_gameOverlay.revoke(b);
         return current&&g_gameOverlay.inputReady(*b);
     }
