@@ -468,6 +468,7 @@ static bool fanHostOwnsLoopbackPort(DWORD pid, unsigned short port);
 #include "screen_special_actions.h"
 #include "fxsound_recovery.h"
 #include "fxsound_control.h"
+#include "capture_exclusion.h"
 #include "game_input_override.h"
 #include "input_shortcut_toggle.h"
 #include "shortcut_window_toggle.h"
@@ -107828,6 +107829,19 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int ns) {
     // exists; a remembered OFF must not briefly hide a controller during boot.
     g_controllerFrontendIsolationEnabled.store(controllerFrontendIsolationSetting(ymSettingsSection("input")),
         std::memory_order_release);
+    // Capture exclusion: 小黄鸭这类按桌面层取帧再整屏缩放的工具有开关可关它自己不
+    // 抓谁，所以只能由被缩放的窗口自己声明"别抓我"。浮层默认隐身（游戏内呼出的就是
+    // 它），主面板默认不隐身——隐身会让用户自己的截图/录屏里面板变成黑块。
+    try {
+        const auto overlaySetting = ymSettingsField("ui", "excludeFromCapture");
+        ymcc::captureexclusion::overlayEnabled.store(
+            !overlaySetting.is_boolean() || overlaySetting.get<bool>(), std::memory_order_release);
+        const auto mainSetting = ymSettingsField("ui", "excludeFromCaptureMain");
+        ymcc::captureexclusion::mainEnabled.store(
+            mainSetting.is_boolean() && mainSetting.get<bool>(), std::memory_order_release);
+    } catch (...) {
+        // 设置在启动早期读不出来时按默认值（浮层隐身 / 主面板可见）继续，不影响启动。
+    }
     controllerFseWakeReconnectRefresh(ymSettingsSection("input"));
     // GP-PREREQ-2: first-install is common to every model; runs before any target admission.
     if (!g_aiFanMockSession.isolated) g_gamepadDriverSetup.start(ymcc::GamepadDriverSetup::ResolveRoot(exe_dir(),POWER_CONTROL_DIR),
@@ -107917,6 +107931,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int ns) {
     appendNativeLifecycleLog("window-created", {{"created", g_hwnd != nullptr}});
     if (g_hwnd) {
         if (!g_aiFanMockSession.isolated) startRecoveryService();
+        // 默认关闭；ui.excludeFromCaptureMain=true 时主面板也隐身。
+        if (ymcc::captureexclusion::excludeMainWindow(g_hwnd))
+            appendNativeLifecycleLog("capture-exclusion", {{"target", "main"}, {"mode", "exclude-from-capture"}});
         if (g_appIconLarge) SendMessageW(g_hwnd, WM_SETICON, ICON_BIG, (LPARAM)g_appIconLarge);
         if (g_appIconSmall) SendMessageW(g_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)g_appIconSmall);
 

@@ -111,8 +111,12 @@ static bool gameOverlaySurfaceShow(const FocusTargetSnapshot& target,ymcc::gameo
     if(base.right<=base.left||base.bottom<=base.top)return false;
     HWND display=CreateWindowExW(static_cast<DWORD>(ymcc::hudinput::requiredExStyle)|WS_EX_TOPMOST|WS_EX_NOREDIRECTIONBITMAP,cls.lpszClassName,L"YeManCC Overlay",WS_POPUP|WS_DISABLED,base.left,base.top,base.right-base.left,base.bottom-base.top,nullptr,nullptr,cls.hInstance,nullptr);
     if(!display)return false;
+    // 对捕获 API 隐身：小黄鸭（Lossless Scaling）按桌面层取帧整屏缩放时拿不到这个
+    // 浮层，缩放只作用于游戏画面，面板保持原分辨率。失败不阻断呈现，只记录。
+    const bool captureExcluded=ymcc::captureexclusion::excludeOverlayWindow(display);
     if(!ymcc::hudinput::ensure(display)||!ymcc::hudinput::registerTouchPassthrough(display)){DestroyWindow(display);return false;}
     g_gameOverlaySurface=display;
+    gameOverlaySurfaceRecord("capture-exclusion",{{"excluded",captureExcluded},{"scope","overlay"}});
     g_gameOverlayDisplayTree.begin(display);
     const HRESULT moved=g_mainWebViewComposition.retarget(display);
     if(FAILED(moved)){g_gameOverlayDisplayTree.restore();DestroyWindow(display);g_gameOverlaySurface=nullptr;gameOverlaySurfaceRecord("surface-move-failed",{{"hresult",static_cast<std::int64_t>(moved)}});return false;}
@@ -144,6 +148,9 @@ static bool gameOverlaySurfaceShow(const FocusTargetSnapshot& target,ymcc::gameo
         },
         [display]{
             RECT bounds{};
+            // Re-assert: retarget/resize does not promise to keep the affinity, and a
+            // failed apply is silent, so refresh it on every present.
+            (void)ymcc::captureexclusion::excludeOverlayWindow(display);
             if(!g_ctrl||!GetClientRect(display,&bounds)||bounds.right<=0||bounds.bottom<=0)return false;
             if(FAILED(g_ctrl->put_Bounds(bounds))||FAILED(g_ctrl->put_IsVisible(TRUE)))return false;
             g_ctrl->NotifyParentWindowPositionChanged();InvalidateRect(display,nullptr,FALSE);
