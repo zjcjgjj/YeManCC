@@ -90108,12 +90108,27 @@ static json nativeAyaSavedLightingRequest(const json& gamepad) {
         if(*ownership=="oem")return json{{"ownership","oem"}};
         if(*ownership!="ymcc")return json::object();
     }
-    const auto enabled=light->find("enabled");if(enabled==light->end()||!enabled->is_boolean()||!enabled->get<bool>())return json::object();
+    // 休眠唤醒后的灯光恢复必须与前端 startupLightingSync.ts 的判据同构：
+    // 「配置过」就不跳过，包括用户主动关灯（enabled=false ⇒ 整灯熄灭）。
+    // 灯光是 EC/MCU 上的易失状态，休眠掉电会把控制权交回固件（0x87=0x00），
+    // 固件默认就是蓝灯呼吸。若这里对 enabled=false 直接返回空，唤醒时 restore
+    // 只会得到 aya-lighting-control-disabled，固件蓝灯亮起后再没人熄它——和面板
+    // 显示的「未启动」互相打脸。启动对账（8878b121）已修此语义，唤醒链补齐。
+    const auto configured=light->find("configured");
+    const bool wasConfigured=configured!=light->end()&&configured->is_boolean()&&configured->get<bool>();
+    const auto enabled=light->find("enabled");
+    const bool enabledOn=enabled!=light->end()&&enabled->is_boolean()&&enabled->get<bool>();
+    // 既没开灯、也没显式配置过 → 真正的新装机，不动固件默认灯效。
+    if(!enabledOn&&!wasConfigured)return json::object();
     const auto off=light->find("off");if(off!=light->end()&&!off->is_boolean())return json::object();
-    json args={{"enabled",off==light->end()||!off->get<bool>()}};
+    const bool offOn=off!=light->end()&&off->get<bool>();
+    // 与 startupLightingSync.ts appliedBrightness 同构：
+    // 关总开关或 off=亮度归零 → enabled=false + brightness=0（整灯熄灭）。
+    json args={{"enabled",enabledOn&&!offOn}};
     for(const auto* key:{"mode","color","color2","speed","brightness","presetId"}){
         const auto value=light->find(key);if(value!=light->end())args[key]=*value;
     }
+    if(!enabledOn||offOn)args["brightness"]=0;
     return args;
 }
 static ymcc::ayaLighting::WriteOwner::Lease nativeAyaLightingAcquireWrite(const json& args) {
