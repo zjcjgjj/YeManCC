@@ -69,7 +69,13 @@ function Invoke-BootFlow($P) {
     $s=& $P.Snapshot
     if(@($s.Xbox).Count){& $P.CloseXbox $s.Xbox}
     $coldSteamLaunch=-not $s.SteamRunning
-    if($s.SteamRunning){& $P.ShowSteam;$shown=$true;$steamSeen=& $P.Now}else{& $P.StartSteam}
+    if($s.SteamRunning){
+        # 已在大屏（SDL_app 窗口存在）时不再发 steam://open/gamepadui：
+        # 重复请求会让 Steam 重放大屏过渡动画，并可能把输入焦点抖回桌面。
+        if($s.SteamWindow){$shown=$true;& $P.Log 'steam-show-skipped' 'reason=bigpicture-already-present'}
+        else{& $P.ShowSteam;$shown=$true}
+        $steamSeen=& $P.Now
+    }else{& $P.StartSteam}
     $requestAt=& $P.Now
     & $P.Log 'steam-launch-admission' 'policy=BAT-STEAM-EARLY-LAUNCH-20261024-R1 inputWaitMs=0 inputReadinessGatesLaunch=False'
     if($coldSteamLaunch -and $P.ContainsKey('InputWarmup')){& $P.InputWarmup}

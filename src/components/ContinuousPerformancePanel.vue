@@ -25,7 +25,8 @@ import AppIcon from './AppIcon.vue';
 import { powerSourceMode } from '@/bridge/powerSource';
 import { subscribeMonitorTdpState } from '@/bridge/monitorAppliedTdp';
 import {
-  TDP_CEILING_FIRMWARE_W, TDP_CEILING_STEPS, knownTdpCeilingWatts, readTdpCeilingState,
+  TDP_CEILING_FIRMWARE_W, TDP_CEILING_HARD_MAX, TDP_CEILING_STEPS, knownTdpCeilingWatts,
+  readTdpCeilingConfig, readTdpCeilingState, saveTdpCeilingConfig,
   type TdpCeilingState,
 } from '@/bridge/tdpCeiling';
 import { subscribePolicyGameStatus } from '@/bridge/gamePolicyTarget';
@@ -200,11 +201,28 @@ function changeFrame(value: number) {
   if (props.summaryOnly || props.readonlyPreview || contextInvalidated || !frame.value) return;
   draftRevision++; frame.value.fps = value;
 }
+// 「最大 TDP」不只是当次下发的上限，也是下次启动要重新落地的固件天花板
+// （重启后固件还原 15W）。之前只有默认值 25 被写进设置，用户改成 16 之后
+// 启动仍按 25 放开，面板显示与硬件状态对不上。这里跟随下拉一起持久化。
+async function persistCeilingWatts(watts: number): Promise<void> {
+  const target = Math.max(0, Math.min(TDP_CEILING_HARD_MAX, Math.round(watts)));
+  if (!Number.isFinite(target) || target < 2) return;
+  try {
+    const current = await readTdpCeilingConfig();
+    await saveTdpCeilingConfig({
+      ...current, enabled: true, watts: target,
+      burstWatts: Math.min(TDP_CEILING_HARD_MAX, Math.max(target, target + 5)),
+    });
+  } catch { /* 持久化失败不能拦住这次下发 */ }
+}
 async function commit(patch: ContinuousSidePatch) {
   if (props.summaryOnly || props.readonlyPreview || contextInvalidated || (!cpuManaged.value && (patch.manual || patch.auto))) return;
   if (removalBusy.value || !snapshot.value?.side || !draft.value) return;
   // 天花板在滑块值真正下发后才会变，稍等再读，避免读到上一次的状态。
-  if ('tdpCeiling' in patch) window.setTimeout(() => { if (alive) void refreshCeilingHint(); }, 1500);
+  if ('tdpCeiling' in patch) {
+    void persistCeilingWatts(Number(patch.tdpCeiling));
+    window.setTimeout(() => { if (alive) void refreshCeilingHint(); }, 1500);
+  }
   const { powerScheme: scheme, ...bankPatch } = patch;
   if (scheme) snapshot.value = { ...snapshot.value, powerScheme: scheme };
   if (Object.keys(bankPatch).length) change(bankPatch);

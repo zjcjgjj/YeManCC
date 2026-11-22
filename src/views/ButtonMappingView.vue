@@ -545,7 +545,7 @@ function closeShortcutEditor(): void {
   <div ref="controllerRoot" class="page controller-page controller-paged" :data-controller-panel="controllerPage" data-gp-scope="controller-page" data-gp-spatial="nearest">
     <header class="console-heading controller-unified-header"><h1 class="controller-page-title"><InlineIcon :name="controllerPage==='calibration'?'calibration-steam':'gamepad'"/><span>{{controllerPage==='controller'?controllerTitle:controllerPage==='calibration'?'校对':'灯光与震动'}}</span></h1><div v-if="controllerPage==='controller'" class="controller-heading-actions">
         <Toggle :model-value="frontendIsolationEnabled" label="呼出隔离" compact
-          title="开启时，YMCC 呼出或最大化会隔离后台手柄输入，界面导航仍可用；关闭时允许手柄输入传递到后台。"
+          title="开启时，YMCC 呼出或最大化会把后台手柄与键盘都隔离给面板：面板导航正常，游戏侧收不到按键；关闭时允许输入传递到后台。"
           aria-describedby="frontend-isolation-status"
           :disabled="!snapshot || frontendIsolationBusy || targetBusy || startProtectionLocked || externalPriorityBusy || profileRemovalBusy || !!profileRemoval"
           @update:model-value="saveFrontendIsolation" />

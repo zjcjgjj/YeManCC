@@ -40,6 +40,9 @@ static bool gameOverlaySurfacePeerOccluded() noexcept {
     return check.occluded;
 }
 static bool gameOverlaySurfaceRestore(){
+    // 先把前台还给游戏，再做任何可能失败的几何恢复：即使 restore 半途失败，
+    // 也不能让"面板占着前台"这个状态挂到一个已经不存在的窗口上。
+    gameOverlayKeyboardLeaseRelease();
     const HWND surface=g_gameOverlaySurface;
     if(!surface)return true;
     g_gameOverlayPanel.close();
@@ -78,7 +81,14 @@ static LRESULT CALLBACK gameOverlaySurfaceProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(m==WM_POINTERACTIVATE)return PA_NOACTIVATE;
     if(m==WM_MOUSEACTIVATE)return MA_NOACTIVATE;
     if(m==WM_SETFOCUS||m==WM_KILLFOCUS)return 0;
-    if(m==WM_ACTIVATE){if(LOWORD(w)!=WA_INACTIVE&&g_gameOverlay.active())gameOverlayStop("independent-surface-unexpected-activation");return 0;}
+    // 接管前台（键盘只归面板）时，激活是本会话主动要来的：把键盘交给 WebView，
+    // 但仍按原样吞掉，不让 DefWindowProc 把焦点转给别的子窗口。非接管态保持
+    // 原有硬约束——浮层被意外激活就整体收回，不留"前台被面板偷走"的半状态。
+    if(m==WM_ACTIVATE){
+        if(LOWORD(w)!=WA_INACTIVE&&g_gameOverlay.active()&&!g_gameOverlayKeyboardLease.load(std::memory_order_acquire))
+            gameOverlayStop("independent-surface-unexpected-activation");
+        return 0;
+    }
     if(m==WM_WINDOWPOSCHANGED){if(g_gameOverlay.active()&&!(GetWindowLongPtrW(h,GWL_EXSTYLE)&WS_EX_TOPMOST))g_gameOverlay.requestCheck();}
     if(m==WM_DISPLAYCHANGE||m==WM_DPICHANGED||m==WM_SETTINGCHANGE){g_gameOverlay.displayChanged();return 0;}
     if(m==WM_CLOSE){gameOverlayStop("independent-surface-close");return 0;}
@@ -172,10 +182,15 @@ static bool gameOverlaySurfaceShow(const FocusTargetSnapshot& target,ymcc::gameo
         []{return gameOverlaySurfacePeerOccluded();}
     });
     if(!begun&&g_gameOverlaySurface)gameOverlaySurfaceRestore();
+    // 面板已呈现：把前台借过来一次，键盘从此刻起只归面板（游戏侧收不到）。
+    // 只对真正的面板会话（originalUiInput）生效；可视性/鼠标探针会话必须保持
+    // 非激活，否则探针自己就会把游戏切到后台，观测结论全部失真。
+    if(begun&&binding.originalUiInput)gameOverlayKeyboardLeaseAcquire(g_gameOverlaySurface,target.hwnd);
     const HWND foregroundAfter=GetAncestor(GetForegroundWindow(),GA_ROOT);
     gameOverlaySurfaceRecord(begun?"presented":"begin-rejected",{{"foregroundAtEntry",reinterpret_cast<std::uintptr_t>(foregroundAtEntry)},
         {"foregroundAfter",reinterpret_cast<std::uintptr_t>(foregroundAfter)},{"target",reinterpret_cast<std::uintptr_t>(target.hwnd)},
-        {"sameForeground",foregroundAtEntry==foregroundAfter},{"displayInert",begun&&ymcc::hudinput::inert(display)},
+        {"sameForeground",foregroundAtEntry==foregroundAfter},{"keyboardLease",g_gameOverlayKeyboardLease.load(std::memory_order_acquire)},
+        {"displayInert",begun&&ymcc::hudinput::inert(display)},
         {"panelReady",g_gameOverlayPanel.ready()},{"panelRetired",g_gameOverlayPanel.retired()}});
     if(begun)controllerIsolationOverlayRendererProbe();
     return begun;
