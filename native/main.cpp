@@ -48656,7 +48656,12 @@ static bool inputHostXboxConfirmStartupLocked(json receipt, ULONGLONG prepareSta
         }
         return rows;
     };
-    const ULONGLONG observeEnd = (std::min)(deadline, GetTickCount64() + 1000);
+    // 2026-11-23 用户裁决：冷开机时系统仍在初始化，XInput 把刚建出的虚拟 Elite
+    // 枚举成可用 slot 常需数秒。原 1000ms 观察窗会在枚举完成前就误判
+    // "xbox-startup-xinput-unavailable" → fault-hold 停写，只能手动重切恢复
+    // （实测 17:25 开机失败、设备节点却 nodePresent=true/nodeProblem=0，17:34 重切即成）。
+    // 放宽到 5000ms 给冷启动枚举留足时间，仍受 prepareStartedTick+15s 总预算约束。
+    const ULONGLONG observeEnd = (std::min)(deadline, GetTickCount64() + 5000);
     while (GetTickCount64() <= observeEnd) {
         if (!inputHostXboxStartupAllowed(powerGeneration) || g_inputHostTransportFault) return false;
         ++polls;
